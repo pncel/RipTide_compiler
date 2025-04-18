@@ -1,2 +1,3 @@
-# riptide_compiler
-Compiler based on Riptide 2022 paper
+# RipTide_compiler
+
+Compiler based on RipTide 2022 paper
