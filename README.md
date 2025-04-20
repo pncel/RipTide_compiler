@@ -1,3 +1,3 @@
 # RipTide_compiler
 
-Compiler for CGRA hardware accelerator in RipTide 2022 paper
+Compiler for CGRA from RipTide 2022 paper
