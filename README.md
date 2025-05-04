@@ -6,6 +6,6 @@ C code -> Clang -> LLVM IR -> dfg_generator -> dfg+CGRA description -> mapper ->
 
 To generate LLVM IR from Clang:
 
-`
+```bash
 clang -O2 -S -emit-llvm <source.c> -o <output.ll>
-`
+```
