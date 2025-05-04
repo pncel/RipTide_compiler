@@ -28,7 +28,7 @@ $ cd RipTide_compiler
 $ mkdir build && cd build
 $ cmake ..
 $ make
-$ opt -load-pass-plugin ./libDataflowGraph.so -passes=dfg-pass -disable-output input.ll
+$ opt -load-pass-plugin ./DataflowGraph.so -passes=dfg-pass -disable-output ../example/simple_ops_ir.ll
 ```
 
 **To generate LLVM IR from Clang:**
