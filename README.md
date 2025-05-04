@@ -11,13 +11,11 @@ $ clang -O2 -S -emit-llvm <source.c> -o <output.ll>
 ```
 **How I built LLVM on Windows/Wsl for this project:**
 
-```bash
-$ sudo apt-get install ninja lld
-```
-
 Within WSL2 and the directory: /mnt/c/ 
 
 ```bash
+$ sudo apt-get install ninja lld
+
 $ git clone --depth 1 https://github.com/llvm/llvm-project.git
 
 $ cd llvm-project
