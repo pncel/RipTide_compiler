@@ -1,15 +1,6 @@
 # RipTide_compiler
 
-**Compiler flow:**
-
-C code -> Clang -> LLVM IR -> dfg_generator -> dfg+CGRA description -> mapper -> CGRA mapping -> bitstream generator -> bitsream 
-
-**To generate LLVM IR from Clang:**
-
-```bash
-$ clang -O2 -S -emit-llvm <source.c> -o <output.ll>
-```
-**How I built LLVM on Windows/Wsl for this project:**
+**Build LLVM on Windows/Wsl for this project:**
 
 Within WSL2 and the directory: /mnt/c/ 
 
@@ -27,4 +18,26 @@ $ ninja -C build
 $ cd build
 
 $ sudo ninja install
+```
+
+### To Run
+
+```bash
+$ git clone https://github.com/pncel/RipTide_compiler.git
+$ cd RipTide_compiler
+$ mkdir build && cd build
+$ cmake ..
+$ make
+
+$ opt -load-pass-plugin ./libDataflowGraph.so -passes=dfg-pass -disable-output input.ll
+```
+
+**Compiler flow:**
+
+C code -> Clang -> LLVM IR -> dfg_generator -> dfg+CGRA description -> mapper -> CGRA mapping -> bitstream generator -> bitsream 
+
+**To generate LLVM IR from Clang:**
+
+```bash
+$ clang -O2 -S -emit-llvm <source.c> -o <output.ll>
 ```
