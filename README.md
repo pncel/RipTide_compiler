@@ -31,12 +31,13 @@ $ make
 $ opt -load-pass-plugin ./libDataflowGraph.so -passes=dfg-pass -disable-output input.ll
 ```
 
-**Compiler flow:**
-
-C code -> Clang -> LLVM IR -> dfg_generator -> dfg+CGRA description -> mapper -> CGRA mapping -> bitstream generator -> bitsream 
-
 **To generate LLVM IR from Clang:**
 
 ```bash
 $ clang -O2 -S -emit-llvm <source.c> -o <output.ll>
 ```
+
+### Compiler flow:
+
+C code -> Clang -> LLVM IR -> dfg_generator -> dfg+CGRA description -> mapper -> CGRA mapping -> bitstream generator -> bitsream 
+
