@@ -53,20 +53,3 @@ entry:
   %3 = add i32 %1, %2      ; Instruction 3: Node N3 (add)  
   ret i32 %3               ; Instruction 4: (ret) - Uses %3  
 }  
-
-dfg:  
-      Arg(a)   Const(5)       Arg(b)   Const(10)  
-         \       /                 \       /  
-            +-----+                   +-----+  
-          | N1  |                   | N2  |  
-          | mul |                   | add |  
-          +-----+                   +-----+  
-             \                       /  
-              +---------------------+  
-              |         N3          |  
-              |         add         |  
-              +---------------------+  
-                        |  
-                      (ret)  
-=======
->>>>>>> 9e190cd3fa9295e28c688c794d67930d5a6c8052
