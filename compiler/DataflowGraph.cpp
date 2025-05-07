@@ -61,7 +61,7 @@ public:
 };
 } // namespace
 
-// Plugin registration
+// Plugin registration for new LLVM pass manger
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo llvmGetPassPluginInfo() {
   return {
     LLVM_PLUGIN_API_VERSION, "DataflowGraph", "v0.1",
