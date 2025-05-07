@@ -17,16 +17,16 @@ entry:
 }  
 
 dfg:  
-&nbsp;&nbsp;&nbsp;      Arg(a)   Const(5)       Arg(b)   Const(10)  
-&nbsp;&nbsp;&nbsp;&nbsp;         \       /                 \       /  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;            +-----+                   +-----+  
-&nbsp;&nbsp;&nbsp;&nbsp;          | N1  |                   | N2  |  
-&nbsp;&nbsp;&nbsp;&nbsp;          | mul |                   | add |  
-&nbsp;&nbsp;&nbsp;&nbsp;          +-----+                   +-----+  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;             \                       /  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;              +---------------------+  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;              |         N3          |  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;              |         add         |  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;              +---------------------+  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;                        |  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;                      (ret)  
+      Arg(a)   Const(5)       Arg(b)   Const(10)  
+         \       /                 \       /  
+            +-----+                   +-----+  
+          | N1  |                   | N2  |  
+          | mul |                   | add |  
+          +-----+                   +-----+  
+             \                       /  
+              +---------------------+  
+              |         N3          |  
+              |         add         |  
+              +---------------------+  
+                        |  
+                      (ret)  
