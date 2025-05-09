@@ -1,5 +1,10 @@
 # RipTide_compiler
 
+### TODO:
+
+* Use RIPTIDE semantics to build a control flow graph
+ * Don't just use register dependecies, use the semantics that the RipTide paper uses
+
 **Build LLVM on Windows/Wsl for this project:**
 
 Within WSL2 and the directory: /mnt/c/ 
