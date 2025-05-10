@@ -3,7 +3,9 @@
 ### TODO:
 
 * Use RIPTIDE semantics to build a control flow graph
- * Don't just use register dependecies, use the semantics that the RipTide paper uses
+  * Control flow operators:
+    * Carry, invariant, T&F steer, stream , order, merge
+* Don't just use register dependecies, use the semantics that the RipTide paper uses
 
 ## Getting started
 
