@@ -16,28 +16,37 @@ namespace {
 class DataflowGraph : public PassInfoMixin<DataflowGraph> {
   std::map<const Instruction*, std::set<const Instruction*>> graph;
 
-  void printDFG() const {
-    errs() << "digraph \"dfg\" {\n";
+  void printDFGToFile(const std::string &filename) const {
+    std::error_code EC;
+    raw_fd_ostream outFile(filename, EC, sys::fs::OF_Text);
+    if (EC) {
+      errs() << "Error opening file " << filename << ": " << EC.message() << "\n";
+      return;
+    }
+  
+    outFile << "digraph \"dfg\" {\n";
     std::map<const Instruction*, std::string> instrNames;
     int id = 0;
-
+  
     for (const auto &entry : graph) {
       const Instruction *I = entry.first;
       if (!instrNames.count(I))
         instrNames[I] = "%" + std::to_string(id++);
-      errs() << "  \"" << instrNames[I] << "\" [label=\"";
-      I->print(errs(), false);
-      errs() << "\"];\n";
-
+      outFile << "  \"" << instrNames[I] << "\" [label=\"";
+      std::string instrStr;
+      raw_string_ostream instrStream(instrStr);
+      I->print(instrStream, false);
+      outFile << instrStream.str() << "\"];\n";
+  
       for (const Instruction *succ : entry.second) {
         if (!instrNames.count(succ))
           instrNames[succ] = "%" + std::to_string(id++);
-        errs() << "  \"" << instrNames[succ] << "\" -> \"" << instrNames[I] << "\";\n";
+        outFile << "  \"" << instrNames[succ] << "\" -> \"" << instrNames[I] << "\";\n";
       }
     }
-
-    errs() << "}\n";
-  }
+  
+    outFile << "}\n";
+}
 
 public:
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
@@ -55,7 +64,7 @@ public:
       }
     }
 
-    printDFG();
+    printDFG("dfg.dot");
     return PreservedAnalyses::all();
   }
 };
