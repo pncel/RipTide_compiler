@@ -5,6 +5,8 @@
 * Use RIPTIDE semantics to build a control flow graph
  * Don't just use register dependecies, use the semantics that the RipTide paper uses
 
+## Getting started
+
 **Build LLVM on Windows/Wsl for this project:**
 
 Within WSL2 and the directory: /mnt/c/ 
@@ -25,7 +27,7 @@ $ cd build
 $ sudo ninja install
 ```
 
-### To Run
+**Run**
 
 ```bash
 $ git clone https://github.com/pncel/RipTide_compiler.git
