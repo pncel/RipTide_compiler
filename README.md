@@ -1,32 +1,57 @@
 # RipTide_compiler
 
-Compiler flow:
+### TODO:
+
+* Use RIPTIDE semantics to build a control flow graph
+  * Control flow operators (get offloaded to NoC):
+    * Carry, invariant, T&F steer, stream , order, merge
+* Don't just use register dependecies, use the semantics that the RipTide paper uses
+
+## Getting started
+
+**Build LLVM on Windows/Wsl for this project:**
+
+Within WSL2 and the directory: /mnt/c/ 
+
+```bash
+sudo apt-get install ninja lld
+git clone --depth 1 https://github.com/llvm/llvm-project.git
+cd llvm-project
+cmake -S llvm -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DLLVM_USE_LINKER=lld -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_TARGETS_TO_BUILD= DLLVM_INCLUDE_TESTS=OFF
+ninja -C build
+cd build
+sudo ninja install
+```
+
+**Run**
+
+```bash
+git clone https://github.com/pncel/RipTide_compiler.git
+cd RipTide_compiler
+mkdir build && cd build
+cmake ..
+make
+opt -load-pass-plugin ./DataflowGraph.so -passes=dfg-pass -disable-output ../example/simple_ops_ir.ll
+```
+
+**Bonus:**
+
+Generate LLVM IR from C:
+```bash
+clang -O2 -S -emit-llvm <source.c> -o <output.ll>
+```
+
+Visualize Data Flow Graph:
+```bash
+sudo apt install graphviz
+dot -Tpng dfg.dot -o dfg.png
+xdg-open dfg.png
+```
+
+### Compiler flow:
 
 C code -> Clang -> LLVM IR -> dfg_generator -> dfg+CGRA description -> mapper -> CGRA mapping -> bitstream generator -> bitsream 
 
-Example llvm ir to dfg:
+Translates C code into a dataflow graph with nodes representing custom ISA ops
 
-llvm ir:
 
-define i32 @my_func(i32 %a, i32 %b) {  
-entry:  
-  %1 = mul i32 %a, 5       ; Instruction 1: Node N1 (mul)  
-  %2 = add i32 %b, 10      ; Instruction 2: Node N2 (add)  
-  %3 = add i32 %1, %2      ; Instruction 3: Node N3 (add)  
-  ret i32 %3               ; Instruction 4: (ret) - Uses %3  
-}  
-
-dfg:  
-&nbsp;&nbsp;&nbsp;      Arg(a)   Const(5)       Arg(b)   Const(10)  
-&nbsp;&nbsp;&nbsp;&nbsp;         \       /                 \       /  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;            +-----+                   +-----+  
-&nbsp;&nbsp;&nbsp;&nbsp;          | N1  |                   | N2  |  
-&nbsp;&nbsp;&nbsp;&nbsp;          | mul |                   | add |  
-&nbsp;&nbsp;&nbsp;&nbsp;          +-----+                   +-----+  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;             \                       /  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;              +---------------------+  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;              |         N3          |  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;              |         add         |  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;              +---------------------+  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;                        |  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;                      (ret)  

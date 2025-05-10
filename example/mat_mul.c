@@ -1,9 +1,4 @@
 void matrixMultiply(const float *A, const float *B, float *C, int M, int K, int N) {
-    // Input validation: Check for null pointers.  Important for robustness.
-    if (A == NULL || B == NULL || C == NULL) {
-        return; // Or you might want to use assert() or return an error code.
-    }
-
     // Loop over the rows of matrix A (M rows)
     for (int i = 0; i < M; ++i) {
         // Loop over the columns of matrix B (N columns)
