@@ -34,10 +34,18 @@ make
 opt -load-pass-plugin ./DataflowGraph.so -passes=dfg-pass -disable-output ../example/simple_ops_ir.ll
 ```
 
-**To generate LLVM IR from Clang:**
+**Bonus:**
 
+Generate LLVM IR from C:
 ```bash
 clang -O2 -S -emit-llvm <source.c> -o <output.ll>
+```
+
+Visualize Data Flow Graph:
+```bash
+sudo apt install graphviz
+dot -Tpng dfg.dot -o dfg.png
+xdg-open dfg.png
 ```
 
 ### Compiler flow:
