@@ -14,6 +14,7 @@
 Within WSL2 and the directory: /mnt/c/ 
 
 ```bash
+sudo apt-get update
 sudo apt-get install ninja lld
 git clone --depth 1 https://github.com/llvm/llvm-project.git
 cd llvm-project
@@ -43,9 +44,9 @@ clang -O2 -S -emit-llvm <source.c> -o <output.ll>
 
 Visualize Data Flow Graph:
 ```bash
-sudo apt install graphviz
+sudo apt-get install graphviz xdg-utils desktop-file-utils eog
 dot -Tpng dfg.dot -o dfg.png
-xdg-open dfg.png
+sudo xdg-open dfg.png
 ```
 
 ### Compiler flow:

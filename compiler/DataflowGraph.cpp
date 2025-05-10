@@ -5,6 +5,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
+#include "llvm/Support/FileSystem.h"
 
 #include <map>
 #include <set>
@@ -64,7 +65,7 @@ public:
       }
     }
 
-    printDFG("dfg.dot");
+    printDFGToFile("dfg.dot");
     return PreservedAnalyses::all();
   }
 };
