@@ -37,7 +37,7 @@ opt -load-pass-plugin ./DataflowGraph.so -passes=dfg-pass -disable-output ../exa
 **To generate LLVM IR from Clang:**
 
 ```bash
-$ clang -O2 -S -emit-llvm <source.c> -o <output.ll>
+clang -O2 -S -emit-llvm <source.c> -o <output.ll>
 ```
 
 ### Compiler flow:
