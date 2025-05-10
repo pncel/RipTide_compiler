@@ -47,10 +47,9 @@ $ clang -O2 -S -emit-llvm <source.c> -o <output.ll>
 ```
 
 ### Compiler flow:
-
+C code -> Clang -> LLVM IR -> dfg_generator -> dfg+CGRA description -> mapper -> CGRA mapping -> bitstream generator -> bitsream 
 Translates C code into a dataflow graph nodes representing custom ISA ops:
 
-<img src="ISA.png" alt="drawing" width="650" height="300"/>
+<img src="ISA.png" alt="drawing" width="750" height="350"/>
 
 
-C code -> Clang -> LLVM IR -> dfg_generator -> dfg+CGRA description -> mapper -> CGRA mapping -> bitstream generator -> bitsream 
