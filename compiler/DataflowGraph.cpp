@@ -42,8 +42,8 @@ class DataflowGraph : public PassInfoMixin<DataflowGraph> {
       for (const Instruction *succ : entry.second) {
         if (!instrNames.count(succ))
           instrNames[succ] = "%" + std::to_string(id++);
-        outFile << "  \"" << instrNames[succ] << "\" -> \"" << instrNames[I] << "\";\n";
-      }
+          outFile << "  \"" << instrNames[I] << "\" -> \"" << instrNames[succ] << "\";\n";
+        }
     }
   
     outFile << "}\n";
