@@ -87,6 +87,8 @@ void example(int*A, int n, int m) {
 }
 ```
 
+LLVM IR Generated:
+
 ```llvm
 ; ModuleID = '../test/simple_ops.c'
 source_filename = "../test/simple_ops.c"
