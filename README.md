@@ -2,10 +2,18 @@
 
 ### TODO:
 
-* Use RIPTIDE semantics to build a control flow graph
-  * Control flow operators (get offloaded to NoC):
-    * Carry, invariant, T&F steer, stream , order, merge
-* Don't just use register dependecies, use the semantics that the RipTide paper uses
+* --Use RIPTIDE semantics to build a control flow graph--
+  * --Control flow operators (get offloaded to NoC):--
+    * --Carry, invariant, T&F steer, stream , order, merge--
+* --Don't just use register dependecies, use the semantics that the RipTide paper uses--
+
+* Verify dataflow graph with more test cases
+  * Does stream work correct?
+  * Does this work for more complex functions?
+  * Where does it break?
+* Write middle end to enforce memory ordering
+  * Directly modifies llvm ir
+* Map dataflow graph to cgra hardware
 
 ## Getting started
 
@@ -60,12 +68,6 @@ sudo apt-get install graphviz xdg-utils desktop-file-utils eog
 dot -Tpng dfg.dot -o dfg.png
 sudo xdg-open dfg.png
 ```
-
-### Compiler flow:
-
-C code -> Clang -> LLVM IR -> dfg_generator -> dfg+CGRA description -> mapper -> CGRA mapping -> bitstream generator -> bitsream 
-
-Translates C code into a dataflow graph with nodes representing custom ISA ops
 
 ### Example C function to DataflowGraph conversion:
 
