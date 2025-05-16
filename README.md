@@ -2,10 +2,10 @@
 
 ### TODO:
 
-*  ~~Use RIPTIDE semantics to build a control flow graph ~~
-  *  ~~Control flow operators (get offloaded to NoC): ~~
-    *  ~~Carry, invariant, T&F steer, stream , order, merge ~~
-*  ~~Don't just use register dependecies, use the semantics that the RipTide paper uses ~~
+*  ~~Use RIPTIDE semantics to build a control flow graph~~
+  *  ~~Control flow operators (get offloaded to NoC):~~
+    *  <span style="color:green;">&#10004;</span> ~~Carry, invariant, T&F steer, stream , order, merge~~
+*  <span style="color:green;">&#10004;</span> ~~Don't just use register dependecies, use the semantics that the RipTide paper uses~~ 
 
 * Verify dataflow graph with more test cases
   * Does stream work correct?
