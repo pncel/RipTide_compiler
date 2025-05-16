@@ -2,10 +2,10 @@
 
 ### TODO:
 
-* --Use RIPTIDE semantics to build a control flow graph--
-  * --Control flow operators (get offloaded to NoC):--
-    * --Carry, invariant, T&F steer, stream , order, merge--
-* --Don't just use register dependecies, use the semantics that the RipTide paper uses--
+*  ~~Use RIPTIDE semantics to build a control flow graph ~~
+  *  ~~Control flow operators (get offloaded to NoC): ~~
+    *  ~~Carry, invariant, T&F steer, stream , order, merge ~~
+*  ~~Don't just use register dependecies, use the semantics that the RipTide paper uses ~~
 
 * Verify dataflow graph with more test cases
   * Does stream work correct?
@@ -29,7 +29,7 @@ __Within WSL2 and the directory: /mnt/c/__
 ```bash
 sudo apt-get update
 sudo apt-get install ninja lld
-git clone --depth 1 https://github.com/llvm/llvm-project.git
+git clone  ~~depth 1 https://github.com/llvm/llvm-project.git
 cd llvm-project
 cmake -S llvm -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug \
