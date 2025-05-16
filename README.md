@@ -67,4 +67,22 @@ C code -> Clang -> LLVM IR -> dfg_generator -> dfg+CGRA description -> mapper ->
 
 Translates C code into a dataflow graph with nodes representing custom ISA ops
 
+### Example C function to DataflowGraph conversion:
 
+**Input:**
+
+```C
+void example(int*A, int n, int m) {
+  A[m] = 1;
+  for (int i = 0; i < n; i++){
+    int foo = A[i];
+    if(foo > 42) {
+      A[i] = 0;
+    }
+    A[i] += foo + i;
+  }
+}
+```
+**Output:**
+
+![Data flow graph](/dfg.png)
