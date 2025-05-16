@@ -17,12 +17,7 @@
 
 ## Getting started
 
-**Build LLVM for pass dev on Windows/Wsl for this project:**
-Without specifying -DCMAKE_INSTALL_PREFIX=..., it will install to:
-Binaries: /usr/local/bin/
-Libraries: /usr/local/lib/
-Headers: /usr/local/include/
-CMake configs: /usr/local/lib/cmake/llvm/ or similar
+**Build LLVM for pass dev on Windows/Wsl for this project:**  
 
 __Within WSL2 and the directory: /mnt/c/__
 
@@ -38,12 +33,18 @@ cmake -S llvm -B build -G Ninja \
   -DLLVM_INCLUDE_TESTS=OFF \
   -DLLVM_TARGETS_TO_BUILD="X86" \
   -DLLVM_ENABLE_PLUGINS=ON \
-  -DLLVM_ENABLE_PROJECTS="clang" \
+  -DLLVM_ENABLE_PROJECTS="clang"
 
-# optional to set install location: -DCMAKE_INSTALL_PREFIX=~/llvm-install
+ # optional to set install location: -DCMAKE_INSTALL_PREFIX=~/llvm-install
+
 ninja -C build
 sudo ninja -C build install
 ```
+Without specifying -DCMAKE_INSTALL_PREFIX=..., it will install to:  
+Binaries: /usr/local/bin/  
+Libraries: /usr/local/lib/  
+Headers: /usr/local/include/  
+CMake configs: /usr/local/lib/cmake/llvm/ or similar 
 
 **Run a pass**
 ```bash
