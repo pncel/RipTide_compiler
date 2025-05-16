@@ -71,6 +71,13 @@ struct CustomDataflowGraph {
     // Map original LLVM Values to their corresponding custom graph nodes
     std::map<const Value*, DataflowNode*> ValueToNodeMap;
 
+    DataflowNode* getOrAdd(Value *V) {
+      if (auto *N = findNodeForValue(V)) return N;
+      std::string tmp; raw_string_ostream ss(tmp);
+      V->print(ss);
+      return addNode(DataflowOperatorType::Unknown, V, ss.str());
+    }
+
     // Add a node to the graph
     DataflowNode* addNode(DataflowOperatorType type, const Value* originalValue = nullptr, const std::string& label = "") {
         Nodes.push_back(std::make_unique<DataflowNode>(type, originalValue, label));
@@ -108,12 +115,22 @@ struct CustomDataflowGraph {
 
     // New helper: hook all loads after a store into that store
     void addMemDepEdges() {
+      // This is a very simplistic memory dependency model.
+      // A proper one would require alias analysis.
+      // This connects *any* load to the *last* store encountered in instruction order,
+      // which is generally incorrect. For a proper DFG, memory dependencies are complex.
+      // I'm keeping it as is for now based on the original code, but note this limitation.
       DataflowNode *lastStore = nullptr;
       for (auto &S : Nodes) {
         if (S->Type == DataflowOperatorType::Store)
           lastStore = S.get();
-        else if (S->Type == DataflowOperatorType::Load && lastStore)
-          addEdge(lastStore, S.get());
+        // Only add dependency if the load is *after* the store in program order
+        // and potentially accesses the same memory. This simple pass doesn't track order
+        // precisely across blocks or perform alias analysis.
+        // The original code just connected any load after any store, which is wrong.
+        // Removing this simplistic memory dependency for now.
+        // else if (S->Type == DataflowOperatorType::Load && lastStore)
+        //   addEdge(lastStore, S.get());
       }
     }
 
@@ -124,7 +141,24 @@ struct CustomDataflowGraph {
 
 namespace {
 class DataflowGraph : public PassInfoMixin<DataflowGraph> {
+    // Helper to unify steering logic
+    std::pair<DataflowNode*,DataflowNode*>
+    createSteers(CustomDataflowGraph &G,
+                 Value *Cond, Value *TV, Value *FV) {
 
+        auto *condN = G.findNodeForValue(Cond);
+        if (!condN)
+            condN = G.addNode(DataflowOperatorType::Unknown,
+                              Cond,
+                              "Cond:"+Cond->getName().str());
+        auto *tS = G.addNode(DataflowOperatorType::TrueSteer, nullptr, "T");
+        auto *fS = G.addNode(DataflowOperatorType::FalseSteer,nullptr, "F");
+        G.addEdge(condN, tS);
+        G.addEdge(condN, fS);
+        if (TV) G.addEdge(G.getOrAdd(TV), tS);
+        if (FV) G.addEdge(G.getOrAdd(FV), fS);
+        return {tS, fS};
+    }
   // Function to print the custom graph to a DOT file
   void printCustomDFGToFile(const CustomDataflowGraph &customGraph, const std::string &filename) const {
     std::error_code EC;
@@ -145,7 +179,7 @@ class DataflowGraph : public PassInfoMixin<DataflowGraph> {
         case DataflowOperatorType::BasicBinaryOp: return "box";
         case DataflowOperatorType::Load: return "ellipse";
         case DataflowOperatorType::Store: return "ellipse";
-        case DataflowOperatorType::Select: return "diamond";
+        //case DataflowOperatorType::Select: return "diamond";
         case DataflowOperatorType::TrueSteer: return "triangle"; 
         case DataflowOperatorType::FalseSteer: return "invtriangle"; 
         case DataflowOperatorType::Merge: return "octagon"; 
@@ -167,7 +201,7 @@ class DataflowGraph : public PassInfoMixin<DataflowGraph> {
             case DataflowOperatorType::BasicBinaryOp: label = "BinOp"; break;
             case DataflowOperatorType::Load: label = "Load"; break;
             case DataflowOperatorType::Store: label = "Store"; break;
-            case DataflowOperatorType::Select: label = "Select"; break;
+            //case DataflowOperatorType::Select: label = "Select"; break;
             case DataflowOperatorType::TrueSteer: label = "TrueSteer"; break;
             case DataflowOperatorType::FalseSteer: label = "FalseSteer"; break;
             case DataflowOperatorType::Merge: label = "Merge"; break;
@@ -257,10 +291,7 @@ public:
                  label = "call"; // Generic label for now
             } else if (isa<ReturnInst>(&I)) {
                  label = "ret"; // Still include return for graph termination visualization
-            } else if (isa<SelectInst>(&I)) {
-                 opType = DataflowOperatorType::Select;
-                 label = "sel"; // Based on image
-            }
+            } 
             // Add checks for other instruction types you want to represent
 
             if (opType != DataflowOperatorType::Unknown || !label.empty()) {
@@ -271,14 +302,57 @@ public:
 
     // Add nodes for function arguments
     for (auto& Arg : F.args()) {
-        customGraph.addNode(DataflowOperatorType::Unknown, &Arg, Arg.getName().str());
+        customGraph.getOrAdd(&Arg); // This adds the node if it doesn't exist
+        auto *node = customGraph.findNodeForValue(&Arg);
+        if (node && node->Label.empty()) {
+             node->Label = Arg.getName().str();
+        }
     }
 
-    // Second pass: Add edges based on data dependencies and introduce steer/merge operators
+    // Add nodes for constants used
+    // This is a bit more involved to find *all* used constants.
+    // A simple approach is to iterate through operands of instructions and getOrAdd constants.
+     for (auto& BB : F) {
+        for (auto& I : BB) {
+            for (auto &Op : I.operands()) {
+                if (auto *C = dyn_cast<Constant>(Op)) {
+                    customGraph.getOrAdd(C);
+                }
+            }
+        }
+     }
+
+    // Convert select nodes to T/F steers
     for (auto &BB : F) {
+      for (auto &inst : BB) {
+        if (auto *SI = dyn_cast<SelectInst>(&inst)) {
+          auto [tS, fS] = createSteers(customGraph,
+                                         SI->getCondition(),
+                                         SI->getTrueValue(),
+                                         SI->getFalseValue());
+
+
+          // (4) now re-wire **all** users of the LLVM select → our two steers
+          for (auto *U : SI->users()) {
+            if (auto *userInst = dyn_cast<Instruction>(U)) {
+              if (auto *dest = customGraph.findNodeForValue(userInst)) {
+                customGraph.addEdge(tS, dest);
+                customGraph.addEdge(fS, dest);
+              }
+            }
+          }
+        }
+      }
+    }
+
+
+      // Pass 2: Add edges based on data dependencies and handle special instructions
+      for (auto &BB : F) {
         for (auto &I : BB) {
             DataflowNode* sourceNode = customGraph.findNodeForValue(&I);
-            if (!sourceNode) continue; // Skip instructions we didn't create nodes for
+            // Source node might not exist for instructions we chose to skip (e.g., some control flow)
+            // Or if it's a PHINode, we will handle edges in the next pass.
+             if (!sourceNode || isa<PHINode>(&I)) continue;
 
             // Handle data dependencies for basic operations
             // Edges go from the definition to the use
@@ -286,139 +360,141 @@ public:
                  if (Instruction *dep = dyn_cast<Instruction>(user)) {
                      DataflowNode* destNode = customGraph.findNodeForValue(dep);
                      if (destNode) {
-                         // Don't add direct edges from comparison/branch if they are handled by steer
-                         bool isSteerSource = isa<ICmpInst>(&I) || isa<FCmpInst>(&I) || isa<BranchInst>(&I);
+                         // Add data dependency edge
+                         // We will handle conditional branches and selects via steers
+                         // and PHIs in a separate pass.
+                         bool isSteerSource = isa<ICmpInst>(&I) || isa<FCmpInst>(&I);
                          bool isSteerDest = destNode->Type == DataflowOperatorType::TrueSteer || destNode->Type == DataflowOperatorType::FalseSteer;
+                         bool isBranchInst = isa<BranchInst>(&I);
+                         bool isPHIDest = isa<PHINode>(dep); // PHI edges handled in pass 3
 
-                         if (!isSteerSource || !isSteerDest) {
-                              customGraph.addEdge(sourceNode, destNode);
+                         if (!isPHIDest && !isBranchInst && (!isSteerSource || !isSteerDest)) {
+                             customGraph.addEdge(sourceNode, destNode);
                          }
                      }
                  } else if (Argument* argUser = dyn_cast<Argument>(user)) {
                      // Handle cases where an instruction's result is used by an argument (less common in standard DFG)
-                 } else if (Constant* constUser = dyn_cast<Constant>(user)) {
-                     // Handle cases where an instruction's result is used by a constant (unusual)
+                     // This might happen if building a graph for a function called by this one.
+                     // For a single-function DFG, this is less relevant.
                  }
             }
 
+            // Handle conditional branches and introduce Steer
+             if (auto *BI = dyn_cast<BranchInst>(&I)) {
+                 if (!BI->isConditional()) continue;
 
-            // Handle conditional branches and introduce Steer/Merge
-            if (auto *BI = dyn_cast<BranchInst>(&I)) {
-              if (!BI->isConditional()) continue;
+                 // Create steer nodes for the branch condition
+                 auto [tS, fS] = createSteers(customGraph,
+                                              BI->getCondition(),
+                                              nullptr, // Branch doesn't have data values itself
+                                              nullptr); // Steers connected to condition, then values routed
 
-              // 1) make sure there's a node for the condition
-              Value *condValue = BI->getCondition();
-              DataflowNode *condNode = customGraph.findNodeForValue(condValue);
-              if (!condNode)
-                condNode = customGraph.addNode(DataflowOperatorType::Unknown,
-                                              condValue,
-                                              "Cond: " +
-                                                (condValue->getName().str()));
+                 // The steer nodes represent the control flow divergence.
+                 // Dataflow through the branches is handled by PHI nodes at the merge point.
+                 // We do *not* connect steers directly to the PHI nodes here in the standard model.
+                 // The steer's outputs would influence which path is taken, affecting which
+                 // incoming value a PHI node receives, but this is control flow, not data flow edges
+                 // in the DFG itself.
+             } else if (auto *SI = dyn_cast<SelectInst>(&I)) {
+                 // Convert select nodes to T/F steers and route their inputs/outputs
+                 auto [tS, fS] = createSteers(customGraph,
+                                              SI->getCondition(),
+                                              SI->getTrueValue(),
+                                              SI->getFalseValue());
 
-              // 2) find the common post-dominator block
-              BasicBlock *trueBB  = BI->getSuccessor(0);
-              BasicBlock *falseBB = BI->getSuccessor(1);
-              BasicBlock *mergeBB = PDT.findNearestCommonDominator(trueBB, falseBB);
+                 // The output of the select is now represented by the outputs of the steers.
+                 // Re-wire users of the select instruction to use the steer nodes' outputs.
+                 DataflowNode* selectNode = customGraph.findNodeForValue(SI);
+                 if (selectNode) {
+                     // Remove existing edges from the original select node if any were added
+                     // This might be tricky with the current addEdge logic preventing duplicates.
+                     // A better approach might be to not add edges *from* the select instruction
+                     // in the main dependency loop if we know we'll replace it with steers.
+                     // For simplicity now, users of the SelectInst will be connected to the steers.
+                     for (auto *U : SI->users()) {
+                         if (auto *userInst = dyn_cast<Instruction>(U)) {
+                             if (auto *dest = customGraph.findNodeForValue(userInst)) {
+                                 customGraph.addEdge(tS, dest); // Output of TrueSteer goes to user
+                                 customGraph.addEdge(fS, dest); // Output of FalseSteer goes to user
+                             }
+                         }
+                     }
+                 }
+             }
+        }
+      }
 
-              
-              if (!mergeBB) continue;
 
-              // 3) Create a single pair of steer nodes per branch site
-              DataflowNode *trueSteerNode  =
-                customGraph.addNode(DataflowOperatorType::TrueSteer,  nullptr, "T");
-              DataflowNode *falseSteerNode =
-                customGraph.addNode(DataflowOperatorType::FalseSteer, nullptr, "F");
-              customGraph.addEdge(condNode, trueSteerNode);
-              customGraph.addEdge(condNode, falseSteerNode);
+      // Pass 3: Add edges specifically for PHI nodes (Merges)
+      for (auto &BB : F) {
+         for (auto &I : BB) {
+             if (auto *PN = dyn_cast<PHINode>(&I)) {
+                 DataflowNode *mergeNode = customGraph.findNodeForValue(PN);
+                 if (!mergeNode) {
+                     // This shouldn't happen if Pass 1 is correct, but as a safeguard:
+                     mergeNode = customGraph.addNode(DataflowOperatorType::Merge, PN, "M");
+                 }
 
-              // 4) For each PHI in the merge block, connect incoming → steer → merge
-              for (auto &MergeI : *mergeBB) {
-                if (auto *PN = dyn_cast<PHINode>(&MergeI)) {
-                  DataflowNode *mergeNode = customGraph.findNodeForValue(PN);
-                  if (!mergeNode)
-                    mergeNode = customGraph.addNode(DataflowOperatorType::Merge, PN, "M");
+                 // Connect incoming values to the Merge node
+                 for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {
+                     Value *inVal = PN->getIncomingValue(i);
+                     // BasicBlock *inBB = PN->getIncomingBlock(i); // Not needed for simple PHI data edges
 
-                   // 2) Create explicit True/False Steer nodes
-                   DataflowNode *trueSteer  = customGraph.addNode(DataflowOperatorType::TrueSteer,
-                                                                  nullptr, "T");
-                  DataflowNode *falseSteer = customGraph.addNode(DataflowOperatorType::FalseSteer,
-                                                                  nullptr, "F");
-                  customGraph.addEdge(condNode, trueSteer);
-                  customGraph.addEdge(condNode, falseSteer);
+                     DataflowNode *inNode = customGraph.getOrAdd(inVal); // Ensure node exists for incoming value
 
-                  // 3) Rewire: T/F → Merge instead of select
-                  customGraph.addEdge(trueSteer,  mergeNode);
-                  customGraph.addEdge(falseSteer, mergeNode);
+                     // Add edge from the incoming value node to the Merge node
+                     customGraph.addEdge(inNode, mergeNode);
+                 }
 
-                  // If this PHI is in a loop header, create its Carry node now
-                  if (Loop *L = LI.getLoopFor(PN->getParent())) {
-                    // 4) Create Carry operator for the loop‐carried phi
-                    DataflowNode *carry = customGraph.addNode(DataflowOperatorType::Carry,
-                                                              PN, "C");
-                    customGraph.addEdge(mergeNode, carry);
-                    // remember it in a map if you like, or find it later
-                  }
+                 // Handle loop-carried values. If this PHI is loop-carried, add a Carry node
+                 // and connect the Merge node to it.
+                 if (Loop *L = LI.getLoopFor(PN->getParent())) {
+                      // Create a Carry node associated with this specific PHI
+                      DataflowNode *carryNode = customGraph.addNode(DataflowOperatorType::Carry, PN, "C");
+                      // Connect the Merge node to the Carry node
+                      customGraph.addEdge(mergeNode, carryNode);
 
-                  // Connect each incoming value to the correct steer
-                  for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {
-                    Value *inVal   = PN->getIncomingValue(i);
-                    BasicBlock *inBB = PN->getIncomingBlock(i);
-                    auto *inNode = customGraph.findNodeForValue(inVal);
-                    if (!inNode) {
-                      std::string s;
-                      raw_string_ostream ss(s);
-                      inVal->print(ss);
-                      inNode = customGraph.addNode(DataflowOperatorType::Unknown,
-                                                  inVal, ss.str());
-                    }
-                    if (inBB == trueBB)
-                      customGraph.addEdge(inNode, trueSteerNode);
-                    else if (inBB == falseBB)
-                      customGraph.addEdge(inNode, falseSteerNode);
-                  }
+                      // This Carry node represents the value being carried to the next iteration.
+                      // How this Carry node connects back to the loop's entry (possibly via a Stream node)
+                      // depends on the desired loop DFG model.
+                      // The original code had a separate loop for this which is prone to errors.
+                      // Let's add connections from the Carry node to the Stream node for this loop header.
+                      if (StreamMap.count(L->getHeader())) {
+                          DataflowNode *strNode = StreamMap.at(L->getHeader());
+                          // Connect the Carry node to the Stream node (value available for next iteration)
+                          customGraph.addEdge(carryNode, strNode);
+                      }
+                 }
+             }
+         }
+     }
+
+      // The loop handling connecting the loop-back value to the Stream node.
+      for (auto &BB : F) {
+        if (Loop *L = LI.getLoopFor(&BB)) {
+            // If this block is a loop latch, connect its terminator's relevant operand
+            // (the loop-back value) to the Stream node for the loop header.
+            if (L->isLoopLatch(&BB)) {
+                if (Instruction *Term = BB.getTerminator()) {
+                    // For a branch, the condition might be relevant, but for the data DFG,
+                    // we're interested in loop-carried values which pass through PHI nodes.
+                    // The loop-back value for a PHI is the incoming value from the latch block.
+                     BasicBlock *Header = L->getHeader();
+                     for (auto &HInstr : *Header) {
+                         if (auto *PN = dyn_cast<PHINode>(&HInstr)) {
+                             Value *BackVal = PN->getIncomingValueForBlock(&BB); // Get value from latch
+                             DataflowNode *BackNode = customGraph.findNodeForValue(BackVal);
+                             if (BackNode && StreamMap.count(Header)) {
+                                  DataflowNode *StrNode = StreamMap.at(Header);
+                                 // Connect the loop-back value's node to the Stream node
+                                  customGraph.addEdge(BackNode, StrNode);
+                             }
+                         }
+                     }
                 }
-              }
             }
         }
       }
-
-    // Now that all PHIs & merges exist, hook up loop‐back and carry→STR
-    for (auto &BB : F) {
-
-      auto SI = StreamMap.find(&BB);
-      if (SI == StreamMap.end()) continue;
-      DataflowNode *StrNode = SI->second;
-
-      // For each PHI in this header, wire back‐edge into STR,
-      // and STR into its carry‐node if we made one.
-      for (Instruction &X : BB) {
-        if (auto *PN = dyn_cast<PHINode>(&X)) {
-          // assume your carry-node is the one you added before the merge
-          DataflowNode *CarryNode = nullptr;
-          
-          for (auto &Eptr : customGraph.Nodes) {
-            DataflowNode *E = Eptr.get();
-            if (E->Type == DataflowOperatorType::Carry && E->Label == "C")
-              CarryNode = E;
-          }
-          // connect PN’s incoming from latch → STR
-          // find the actual loop latch from LI
-          Loop *L = LI.getLoopFor(&BB);
-
-          if (!L) continue;
-          BasicBlock *Latch = L->getLoopLatch();
-          if (!Latch) continue;
-          Value *BackVal = PN->getIncomingValueForBlock(Latch);
-          
-          if (auto *BackNode = customGraph.findNodeForValue(BackVal))
-            customGraph.addEdge(BackNode, StrNode);
-
-          // connect STR → carry (so the next iter sees the carried value)
-          if (CarryNode)
-            customGraph.addEdge(StrNode, CarryNode);
-        }
-      }
-    }
 
     // Hook up memory‐dependency edges (store→load)
     customGraph.addMemDepEdges();
