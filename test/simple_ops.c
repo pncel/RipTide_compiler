@@ -1,8 +1,10 @@
-// Type your code here, or load an example.
-int simple_ops(int num) {
-    int number = 90;
-    number = number + num;
-    int output = num * num;
-    output = output << 2; 
-    return output * number;
+void example(int*A, int n, int m) {
+  A[m] = 1;
+  for (int i = 0; i < n; i++){
+    int foo = A[i];
+    if(foo > 42) {
+      A[i] = 0;
+    }
+    A[i] += foo + i;
+  }
 }
