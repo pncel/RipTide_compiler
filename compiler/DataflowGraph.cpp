@@ -14,6 +14,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <list>
 #include <vector>
 #include <memory> // For unique_ptr
 #include <algorithm> // For std::find
@@ -66,7 +67,7 @@ struct DataflowNode {
 
 // Represents the entire custom dataflow graph
 struct CustomDataflowGraph {
-    std::vector<std::unique_ptr<DataflowNode>> Nodes;
+    std::list<std::unique_ptr<DataflowNode>> Nodes;
     std::vector<std::unique_ptr<DataflowEdge>> Edges;
     // Map original LLVM Values to their corresponding custom graph nodes
     std::map<const Value*, DataflowNode*> ValueToNodeMap;
@@ -144,21 +145,26 @@ class DataflowGraph : public PassInfoMixin<DataflowGraph> {
     // Helper to unify steering logic
     std::pair<DataflowNode*,DataflowNode*>
     createSteers(CustomDataflowGraph &G,
-                 Value *Cond, Value *TV, Value *FV) {
+                Value *Cond, Value *TrueVal, Value *FalseVal) {
+      // 1) Make sure the comparison itself has its own node.
+      DataflowNode *condN = G.getOrAdd(Cond);
+      condN->Type = DataflowOperatorType::BasicBinaryOp; // icmp/fcmp
 
-        auto *condN = G.findNodeForValue(Cond);
-        if (!condN)
-            condN = G.addNode(DataflowOperatorType::Unknown,
-                              Cond,
-                              "Cond:"+Cond->getName().str());
-        auto *tS = G.addNode(DataflowOperatorType::TrueSteer, nullptr, "T");
-        auto *fS = G.addNode(DataflowOperatorType::FalseSteer,nullptr, "F");
-        G.addEdge(condN, tS);
-        G.addEdge(condN, fS);
-        if (TV) G.addEdge(G.getOrAdd(TV), tS);
-        if (FV) G.addEdge(G.getOrAdd(FV), fS);
-        return {tS, fS};
+      // 2) Create the two steer gates
+      DataflowNode *tS = G.addNode(DataflowOperatorType::TrueSteer,  nullptr, "T");
+      DataflowNode *fS = G.addNode(DataflowOperatorType::FalseSteer, nullptr, "F");
+
+      // 3) Wire them: each gets the cond plus its one data input
+      G.addEdge(condN, tS);
+      G.addEdge(condN, fS);
+
+      if (TrueVal)  G.addEdge(G.getOrAdd(TrueVal),  tS);
+      if (FalseVal) G.addEdge(G.getOrAdd(FalseVal), fS);
+
+      return {tS,fS};
     }
+
+  std::map<BranchInst*, std::pair<DataflowNode*,DataflowNode*>> BranchSteers;
   // Function to print the custom graph to a DOT file
   void printCustomDFGToFile(const CustomDataflowGraph &customGraph, const std::string &filename) const {
     std::error_code EC;
@@ -253,15 +259,6 @@ public:
     // Get analysis results
     PostDominatorTree &PDT = FAM.getResult<PostDominatorTreeAnalysis>(F);
     LoopInfo         &LI  = FAM.getResult<LoopAnalysis>(F);
-
-    // For each natural loop, allocate a single Stream node at the header
-    std::map<BasicBlock*,DataflowNode*> StreamMap;
-    for (Loop *L : LI) {
-      BasicBlock *H = L->getHeader();
-      // Create one STR per loop
-      StreamMap[H] = customGraph.addNode(DataflowOperatorType::Stream,
-                                         nullptr, "STR");
-    }
 
     // First pass: Create nodes for all relevant LLVM values (instructions, arguments, constants)
     // This helps in mapping users/operands to graph nodes later.
@@ -384,11 +381,11 @@ public:
                  if (!BI->isConditional()) continue;
 
                  // Create steer nodes for the branch condition
-                 auto [tS, fS] = createSteers(customGraph,
+                 auto steerPair = createSteers(customGraph,
                                               BI->getCondition(),
                                               nullptr, // Branch doesn't have data values itself
                                               nullptr); // Steers connected to condition, then values routed
-
+                 BranchSteers[BI] = steerPair;
                  // The steer nodes represent the control flow divergence.
                  // Dataflow through the branches is handled by PHI nodes at the merge point.
                  // We do *not* connect steers directly to the PHI nodes here in the standard model.
@@ -429,72 +426,46 @@ public:
       for (auto &BB : F) {
          for (auto &I : BB) {
              if (auto *PN = dyn_cast<PHINode>(&I)) {
-                 DataflowNode *mergeNode = customGraph.findNodeForValue(PN);
-                 if (!mergeNode) {
-                     // This shouldn't happen if Pass 1 is correct, but as a safeguard:
-                     mergeNode = customGraph.addNode(DataflowOperatorType::Merge, PN, "M");
-                 }
+                DataflowNode *mergeNode = customGraph.findNodeForValue(PN);
+                if (!mergeNode) {
+                    // This shouldn't happen if Pass 1 is correct, but as a safeguard:
+                    mergeNode = customGraph.addNode(DataflowOperatorType::Merge, PN, "M");
+                }
 
-                 // Connect incoming values to the Merge node
-                 for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {
-                     Value *inVal = PN->getIncomingValue(i);
-                     // BasicBlock *inBB = PN->getIncomingBlock(i); // Not needed for simple PHI data edges
+                // Connect incoming values to the Merge node
+                for (unsigned i = 0, e = PN->getNumIncomingValues(); i < e; ++i) {
+                  Value      *inVal = PN->getIncomingValue(i);
+                  BasicBlock *inBB  = PN->getIncomingBlock(i);
 
-                     DataflowNode *inNode = customGraph.getOrAdd(inVal); // Ensure node exists for incoming value
-
-                     // Add edge from the incoming value node to the Merge node
-                     customGraph.addEdge(inNode, mergeNode);
-                 }
-
-                 // Handle loop-carried values. If this PHI is loop-carried, add a Carry node
-                 // and connect the Merge node to it.
-                 if (Loop *L = LI.getLoopFor(PN->getParent())) {
-                      // Create a Carry node associated with this specific PHI
-                      DataflowNode *carryNode = customGraph.addNode(DataflowOperatorType::Carry, PN, "C");
-                      // Connect the Merge node to the Carry node
-                      customGraph.addEdge(mergeNode, carryNode);
-
-                      // This Carry node represents the value being carried to the next iteration.
-                      // How this Carry node connects back to the loop's entry (possibly via a Stream node)
-                      // depends on the desired loop DFG model.
-                      // The original code had a separate loop for this which is prone to errors.
-                      // Let's add connections from the Carry node to the Stream node for this loop header.
-                      if (StreamMap.count(L->getHeader())) {
-                          DataflowNode *strNode = StreamMap.at(L->getHeader());
-                          // Connect the Carry node to the Stream node (value available for next iteration)
-                          customGraph.addEdge(carryNode, strNode);
+                  // 1) Wire the “true or false” steer node
+                  if (auto *term = dyn_cast<BranchInst>(inBB->getTerminator()))
+                    if (term->isConditional()) {
+                      auto it = BranchSteers.find(term);
+                      if (it != BranchSteers.end()) {
+                        DataflowNode *steer =
+                          (term->getSuccessor(0) == PN->getParent())
+                            ? it->second.first   // true‐steer
+                            : it->second.second; // false‐steer
+                        if (steer)
+                          customGraph.addEdge(steer, mergeNode);
                       }
-                 }
+                    }
+
+                  // 2) Wire the “decider” itself (the icmp/fcmp) as D
+                  if (auto *term = dyn_cast<BranchInst>(inBB->getTerminator()))
+                    if (term->isConditional()) {
+                      DataflowNode *condN = customGraph.findNodeForValue(term->getCondition());
+                      if (condN)
+                        customGraph.addEdge(condN, mergeNode);
+                    }
+
+                  // 3) Wire the actual data value (A or B)
+                  DataflowNode *valueN = customGraph.getOrAdd(inVal);
+                  customGraph.addEdge(valueN, mergeNode);
+                }
              }
          }
      }
-
-      // The loop handling connecting the loop-back value to the Stream node.
-      for (auto &BB : F) {
-        if (Loop *L = LI.getLoopFor(&BB)) {
-            // If this block is a loop latch, connect its terminator's relevant operand
-            // (the loop-back value) to the Stream node for the loop header.
-            if (L->isLoopLatch(&BB)) {
-                if (Instruction *Term = BB.getTerminator()) {
-                    // For a branch, the condition might be relevant, but for the data DFG,
-                    // we're interested in loop-carried values which pass through PHI nodes.
-                    // The loop-back value for a PHI is the incoming value from the latch block.
-                     BasicBlock *Header = L->getHeader();
-                     for (auto &HInstr : *Header) {
-                         if (auto *PN = dyn_cast<PHINode>(&HInstr)) {
-                             Value *BackVal = PN->getIncomingValueForBlock(&BB); // Get value from latch
-                             DataflowNode *BackNode = customGraph.findNodeForValue(BackVal);
-                             if (BackNode && StreamMap.count(Header)) {
-                                  DataflowNode *StrNode = StreamMap.at(Header);
-                                 // Connect the loop-back value's node to the Stream node
-                                  customGraph.addEdge(BackNode, StrNode);
-                             }
-                         }
-                     }
-                }
-            }
-        }
-      }
 
     // Hook up memory‐dependency edges (store→load)
     customGraph.addMemDepEdges();
