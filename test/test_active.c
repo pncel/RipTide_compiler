@@ -1,10 +1,11 @@
-void example(int*A, int n, int m) {
-  A[m] = 1;
-  for (int i = 0; i < n; i++){
-    int foo = A[i];
+int example1(int A, int n) {
+    int foo = A + 8;
+    int output = 0;
+
     if(foo > 42) {
-      A[i] = 0;
-    }
-    A[i] += foo + i;
-  }
+      output = 9 + n;
+      foo += output;
+    } 
+
+    return output + foo + n;
 }

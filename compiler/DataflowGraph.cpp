@@ -26,10 +26,12 @@ using namespace llvm::sys;
 // Define the types of custom dataflow operators
 enum class DataflowOperatorType {
     Unknown,
+    FunctionInput, // Represents a function argument - ADDED
+    FunctionOutput, // Represents a return value - ADDED (Good practice)
+    Constant, // Represents a constant value - ADDED
     BasicBinaryOp, // For arithmetic, bitwise, etc.
     Load,
     Store,
-    Select, // If we decide to include LLVM's select
     TrueSteer, // TIF, representing conditional data steering
     FalseSteer, // F, representing conditional data steering
     Merge, // M, corresponds to PHI
@@ -72,11 +74,16 @@ struct CustomDataflowGraph {
     // Map original LLVM Values to their corresponding custom graph nodes
     std::map<const Value*, DataflowNode*> ValueToNodeMap;
 
+    // Modified getOrAdd to set basic types for Arguments and Constants
     DataflowNode* getOrAdd(Value *V) {
-      if (auto *N = findNodeForValue(V)) return N;
-      std::string tmp; raw_string_ostream ss(tmp);
-      V->print(ss);
-      return addNode(DataflowOperatorType::Unknown, V, ss.str());
+        if (!V) return nullptr; // Handle null values gracefully
+        if (auto *N = findNodeForValue(V)) return N;
+
+        // Determine initial type based on Value type
+        DataflowOperatorType type = DataflowOperatorType::Unknown;
+        if (isa<Argument>(V)) type = DataflowOperatorType::FunctionInput;
+        else if (isa<Constant>(V)) type = DataflowOperatorType::Constant;
+        return addNode(type, V); // Initial label can be empty and generated later
     }
 
     // Add a node to the graph
@@ -182,10 +189,12 @@ class DataflowGraph : public PassInfoMixin<DataflowGraph> {
     // Define node shapes and labels based on operator type
     auto getNodeShape = [](DataflowOperatorType type) {
       switch (type) {
+        case DataflowOperatorType::FunctionInput: return "ellipse"; // ADDED shape
+        case DataflowOperatorType::FunctionOutput: return "ellipse"; // ADDED shape
+        case DataflowOperatorType::Constant: return "box"; // ADDED shape
         case DataflowOperatorType::BasicBinaryOp: return "box";
         case DataflowOperatorType::Load: return "ellipse";
         case DataflowOperatorType::Store: return "ellipse";
-        //case DataflowOperatorType::Select: return "diamond";
         case DataflowOperatorType::TrueSteer: return "triangle"; 
         case DataflowOperatorType::FalseSteer: return "invtriangle"; 
         case DataflowOperatorType::Merge: return "octagon"; 
@@ -215,6 +224,9 @@ class DataflowGraph : public PassInfoMixin<DataflowGraph> {
             case DataflowOperatorType::Invariant: label = "Invariant"; break;
             case DataflowOperatorType::Order: label = "Order"; break;
             case DataflowOperatorType::Stream: label = "Stream"; break;
+            case DataflowOperatorType::FunctionInput: label = "Input"; break;
+            case DataflowOperatorType::FunctionOutput: label = "Output"; break;
+            case DataflowOperatorType::Constant: label = "Const"; break;
             default: label = "Unknown"; break;
         }
         if (node->OriginalValue) {
@@ -226,11 +238,17 @@ class DataflowGraph : public PassInfoMixin<DataflowGraph> {
         return label;
     };
 
+    // ADDED: Lambda to check if a node should be included even if empty
+    auto shouldIncludeEmptyNode = [](const DataflowNode* node) {
+        return node->Type == DataflowOperatorType::FunctionInput ||
+               node->Type == DataflowOperatorType::FunctionOutput;
+    };
 
     for (const auto& nodePtr : customGraph.Nodes) {
-      // SKip empty nodes
+      // Skip empty nodes
       if (nodePtr->Inputs.empty() && nodePtr->Outputs.empty())
         continue;
+      if (nodePtr->Inputs.empty() && nodePtr->Outputs.empty() && !shouldIncludeEmptyNode(nodePtr.get())) continue; // MODIFIED condition
       const DataflowNode* node = nodePtr.get();
       std::string nodeName = "node" + std::to_string(id++);
       nodeNames[node] = nodeName;
@@ -257,67 +275,82 @@ public:
 
     // Get analysis results
     // Get analysis results
-    PostDominatorTree &PDT = FAM.getResult<PostDominatorTreeAnalysis>(F);
+    // PostDominatorTree &PDT = FAM.getResult<PostDominatorTreeAnalysis>(F);
     LoopInfo         &LI  = FAM.getResult<LoopAnalysis>(F);
 
     // First pass: Create nodes for all relevant LLVM values (instructions, arguments, constants)
     // This helps in mapping users/operands to graph nodes later.
     for (auto& BB : F) {
         for (auto& I : BB) {
+          if (isa<SelectInst>(&I) || isa<GetElementPtrInst>(&I))
+            continue;
             DataflowOperatorType opType = DataflowOperatorType::Unknown;
             std::string label = "";
 
-            if (I.isBinaryOp()) {
-                opType = DataflowOperatorType::BasicBinaryOp;
-                label = Instruction::getOpcodeName(I.getOpcode());
-            } else if (isa<LoadInst>(&I)) {
-                opType = DataflowOperatorType::Load;
-                label = "ld";
-            } else if (isa<StoreInst>(&I)) {
-                opType = DataflowOperatorType::Store;
-                label = "st";
-            } else if (isa<ICmpInst>(&I) || isa<FCmpInst>(&I)) {
-                 // Comparisons will be linked to Steer nodes, create a node for the comparison result
-                 opType = DataflowOperatorType::BasicBinaryOp; // Treat comparison as a binary op for its result
-                 label = Instruction::getOpcodeName(I.getOpcode());
-            } else if (isa<PHINode>(&I)) {
-                opType = DataflowOperatorType::Merge;
-                label = "M"; // Based on image
-            } else if (isa<CallInst>(&I)) {
-                 // Handle function calls - could be basic ops or more complex
-                 label = "call"; // Generic label for now
-            } else if (isa<ReturnInst>(&I)) {
-                 label = "ret"; // Still include return for graph termination visualization
-            } 
-            // Add checks for other instruction types you want to represent
+          if (I.isBinaryOp()) {
+            opType = DataflowOperatorType::BasicBinaryOp;
+            label = Instruction::getOpcodeName(I.getOpcode());
+          } else if (isa<LoadInst>(&I)) {
+             opType = DataflowOperatorType::Load;
+             label = "ld";
+          } else if (isa<StoreInst>(&I)) {
+              opType = DataflowOperatorType::Store;
+              label = "st";
+          } else if (isa<ICmpInst>(&I) || isa<FCmpInst>(&I)) {
+              // Comparisons will be linked to Steer nodes, create a node for the comparison result
+              opType = DataflowOperatorType::BasicBinaryOp; // Treat comparison as a binary op for its result
+              label = Instruction::getOpcodeName(I.getOpcode());
+          } else if (isa<PHINode>(&I)) {
+              opType = DataflowOperatorType::Merge;
+              label = "M"; // Based on image
+          } else if (isa<CallInst>(&I)) {
+              // Handle function calls - could be basic ops or more complex
+              label = "call"; // Generic label for now
+          } else if (isa<ReturnInst>(&I)) {
+              label = "ret"; // Still include return for graph termination visualization
+          } 
+          // Add checks for other instruction types you want to represent
 
-            if (opType != DataflowOperatorType::Unknown || !label.empty()) {
-                 customGraph.addNode(opType, &I, label);
-            }
+          // Get or create the node for the instruction
+          DataflowNode* instNode = customGraph.getOrAdd(&I);
+
+          // Update the type and label if determined
+          if (instNode) {
+            if (opType != DataflowOperatorType::Unknown) instNode->Type = opType;
+            if (!label.empty()) instNode->Label = label; // Prioritize explicit labels
+          }
         }
     }
 
     // Add nodes for function arguments
     for (auto& Arg : F.args()) {
-        customGraph.getOrAdd(&Arg); // This adds the node if it doesn't exist
-        auto *node = customGraph.findNodeForValue(&Arg);
-        if (node && node->Label.empty()) {
-             node->Label = Arg.getName().str();
-        }
+      DataflowNode* argNode = customGraph.getOrAdd(&Arg);
+      // Type is set in the modified getOrAdd, but ensure label is descriptive
+      if (argNode && argNode->Label.empty()) { // Don't overwrite existing labels if any
+        std::string argLabel; raw_string_ostream ss(argLabel);
+        ss << Arg; // Print arg name and type
+        DataflowNode* argNode = customGraph.getOrAdd(&Arg);
+        argNode->Type = DataflowOperatorType::FunctionInput;
+        argNode->Label = ss.str();
+      }
     }
 
     // Add nodes for constants used
     // This is a bit more involved to find *all* used constants.
     // A simple approach is to iterate through operands of instructions and getOrAdd constants.
-     for (auto& BB : F) {
-        for (auto& I : BB) {
-            for (auto &Op : I.operands()) {
-                if (auto *C = dyn_cast<Constant>(Op)) {
-                    customGraph.getOrAdd(C);
-                }
-            }
+    for (auto& BB : F) {
+      for (auto& I : BB) {
+        for (auto &Op : I.operands()) {
+          if (auto *C = dyn_cast<Constant>(Op)) {
+            customGraph.getOrAdd(C);
+          }
+          // Also add nodes for Arguments if they are operands (e.g., ptr args)
+          if (auto *A = dyn_cast<Argument>(Op)) {
+            customGraph.getOrAdd(A); // Type and label handled in getOrAdd
+          }
         }
-     }
+      }
+    }
 
     // Convert select nodes to T/F steers
     for (auto &BB : F) {
@@ -337,6 +370,7 @@ public:
                 customGraph.addEdge(fS, dest);
               }
             }
+            // TODO: Handle cases where a SelectInst is used by an Argument or Constant (less common)
           }
         }
       }
@@ -346,34 +380,47 @@ public:
       // Pass 2: Add edges based on data dependencies and handle special instructions
       for (auto &BB : F) {
         for (auto &I : BB) {
-            DataflowNode* sourceNode = customGraph.findNodeForValue(&I);
-            // Source node might not exist for instructions we chose to skip (e.g., some control flow)
-            // Or if it's a PHINode, we will handle edges in the next pass.
-             if (!sourceNode || isa<PHINode>(&I)) continue;
+          // wire every constant operand into I
+          if (DataflowNode *instN = customGraph.findNodeForValue(&I)) {
+            for (auto &op : I.operands()) {
+              if (auto *C = dyn_cast<Constant>(op)) {
+                customGraph.addEdge(customGraph.getOrAdd(C), instN);
+              }
+            }
+          }
+          DataflowNode* sourceNode = customGraph.findNodeForValue(&I);
+          // Source node might not exist for instructions we chose to skip (e.g., some control flow)
+          // Or if it's a PHINode, we will handle edges in the next pass.
+          // skip PHI (handled later), Select (steers), and GEP
+          if (!sourceNode
+            || isa<PHINode>(&I)
+            || isa<SelectInst>(&I)
+            || isa<GetElementPtrInst>(&I))
+            continue;
 
-            // Handle data dependencies for basic operations
-            // Edges go from the definition to the use
-            for (User *user : I.users()) {
-                 if (Instruction *dep = dyn_cast<Instruction>(user)) {
-                     DataflowNode* destNode = customGraph.findNodeForValue(dep);
-                     if (destNode) {
-                         // Add data dependency edge
-                         // We will handle conditional branches and selects via steers
-                         // and PHIs in a separate pass.
-                         bool isSteerSource = isa<ICmpInst>(&I) || isa<FCmpInst>(&I);
-                         bool isSteerDest = destNode->Type == DataflowOperatorType::TrueSteer || destNode->Type == DataflowOperatorType::FalseSteer;
-                         bool isBranchInst = isa<BranchInst>(&I);
-                         bool isPHIDest = isa<PHINode>(dep); // PHI edges handled in pass 3
+          // Handle data dependencies for basic operations
+          // Edges go from the definition to the use
+          for (User *user : I.users()) {
+            if (Instruction *dep = dyn_cast<Instruction>(user)) {
+              DataflowNode* destNode = customGraph.findNodeForValue(dep);
+                if (destNode) {
+                  // Add data dependency edge
+                  // We will handle conditional branches and selects via steers
+                  // and PHIs in a separate pass.
+                  bool isSteerSource = isa<ICmpInst>(&I) || isa<FCmpInst>(&I);
+                  bool isSteerDest = destNode->Type == DataflowOperatorType::TrueSteer || destNode->Type == DataflowOperatorType::FalseSteer;
+                  bool isBranchInst = isa<BranchInst>(&I);
+                  bool isPHIDest = isa<PHINode>(dep); // PHI edges handled in pass 3
 
-                         if (!isPHIDest && !isBranchInst && (!isSteerSource || !isSteerDest)) {
-                             customGraph.addEdge(sourceNode, destNode);
-                         }
-                     }
-                 } else if (Argument* argUser = dyn_cast<Argument>(user)) {
-                     // Handle cases where an instruction's result is used by an argument (less common in standard DFG)
-                     // This might happen if building a graph for a function called by this one.
-                     // For a single-function DFG, this is less relevant.
-                 }
+                  if (!isPHIDest && !isBranchInst && (!isSteerSource || !isSteerDest)) {
+                    customGraph.addEdge(sourceNode, destNode);
+                  }
+                }
+            } else if (Argument* argUser = dyn_cast<Argument>(user)) {
+                // Handle cases where an instruction's result is used by an argument (less common in standard DFG)
+                // This might happen if building a graph for a function called by this one.
+                // For a single-function DFG, this is less relevant.
+              }
             }
 
             // Handle conditional branches and introduce Steer
@@ -465,8 +512,26 @@ public:
                 }
              }
          }
-     }
+    }
 
+    // Pass 4: Add edges from Function Arguments to their users
+    for (auto& Arg : F.args()) {
+        DataflowNode* argNode = customGraph.findNodeForValue(&Arg);
+        if (!argNode) continue; // Should not happen if getOrAdd was called for args
+
+        // Iterate over the users of the original LLVM Argument
+        for (User *user : Arg.users()) {
+            // If the user is an instruction, add an edge to its corresponding node
+            if (Instruction *userInst = dyn_cast<Instruction>(user)) {
+                DataflowNode* userNode = customGraph.findNodeForValue(userInst);
+                if (userNode) {
+                    // Add a data dependency edge from the argument node to the instruction node
+                    customGraph.addEdge(argNode, userNode);
+                }
+            }
+            // TODO: Handle cases where an argument is used by another Argument or Constant (less common)
+        }
+    }
     // Hook up memory‐dependency edges (store→load)
     customGraph.addMemDepEdges();
 
@@ -479,7 +544,7 @@ public:
 // Plugin registration for new LLVM pass manger
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo llvmGetPassPluginInfo() {
   return {
-    LLVM_PLUGIN_API_VERSION, "DataflowGraph", "v0.4", // Updated version
+    LLVM_PLUGIN_API_VERSION, "DataflowGraph", "v0.7", // Updated version
     [](PassBuilder &PB) {
       PB.registerPipelineParsingCallback(
         [](StringRef Name, FunctionPassManager &FPM,
