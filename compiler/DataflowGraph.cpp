@@ -86,18 +86,25 @@ struct CustomDataflowGraph {
   // Map original LLVM Values to their corresponding custom graph nodes
   std::map<const Value*, DataflowNode*> ValueToNodeMap;
 
-   /// Recursively wire V into destN, but if V is either a GEP
+  /// Recursively wire V into destN, but if V is either a GEP
   /// or any instruction whose node type is still Unknown,
   /// don’t create a node for V—just forward its operands.
   void wireValueToNode(Value  *V, DataflowNode *destN) {
     if (!V || !destN) return;
 
     // 1) If it’s a GEP, unwrap it by wiring its operands
-    if (auto *GEP = dyn_cast<GetElementPtrInst>(V)) {
+    if (isa<GetElementPtrInst>(V)) {
+      auto *GEP = dyn_cast<GetElementPtrInst>(V);
       wireValueToNode(GEP->getPointerOperand(), destN);
       for (Use &IU : GEP->indices())
         wireValueToNode(IU.get(), destN);
       return;
+    }
+
+    // 1.5) Handle zero and sign extension istructions
+    if (isa<ZExtInst>(V) || isa<SExtInst>(V)){
+      auto *GEP = dyn_cast<ZExtInst>(V);
+      wireValueToNode(GEP->getOperand(0), destN);
     }
 
     // 2) If we already have a real node for V, hook it up directly
@@ -119,7 +126,11 @@ struct CustomDataflowGraph {
 
     // Modified getOrAdd to set basic types for Arguments and Constants
     DataflowNode* getOrAdd(Value *V) {
-      if (isa<GetElementPtrInst>(V))
+      // never materialize conditional branches as nodes
+      if (auto *BI = dyn_cast<BranchInst>(V))
+        if (BI->isConditional())
+          return nullptr;
+      if (isa<GetElementPtrInst>(V) || isa<ZExtInst>(V) || isa<SExtInst>(V))
         return nullptr;
       if (!V) return nullptr; // Handle null values gracefully
       if (auto *N = findNodeForValue(V)) return N;
@@ -353,48 +364,13 @@ public:
     // PostDominatorTree &PDT = FAM.getResult<PostDominatorTreeAnalysis>(F);
     LoopInfo         &LI  = FAM.getResult<LoopAnalysis>(F);
 
-
-    // ==== PASS 0: handle all branches up‐front ====
-    for (auto &BB : F) {
-      for (auto &I : BB) {
-        if (auto *BI = dyn_cast<BranchInst>(&I)) {
-          if (BI->isConditional()) {
-            // setup steer nodes and wire condition
-            auto [tS,fS] = createSteers(customGraph,
-                                        BI->getCondition(),
-                                        /*no data value*/ nullptr,
-                                        /*no data value*/ nullptr);
-            BranchSteers[BI] = {tS,fS};
-
-            // Hook the entry stream into each branch-steer
-            DataflowNode *entryStr = getOrCreateFuncEntryStream(customGraph, F);
-            customGraph.addEdge(entryStr, tS);
-            customGraph.addEdge(entryStr, fS);
-
-            // Wire each steer into the first non‐PHI instr of its successor
-            if (auto *trueBB = BI->getSuccessor(0)) {
-              auto it = std::find_if(trueBB->begin(), trueBB->end(),
-                                     [](Instruction &J){ return !isa<PHINode>(J); });
-              if (it != trueBB->end())
-                customGraph.addEdge(tS, customGraph.getOrAdd(&*it));
-            }
-            if (auto *falseBB = BI->getSuccessor(1)) {
-              auto it = std::find_if(falseBB->begin(), falseBB->end(),
-                                     [](Instruction &J){ return !isa<PHINode>(J); });
-              if (it != falseBB->end())
-                customGraph.addEdge(fS, customGraph.getOrAdd(&*it));
-            }
-          }
-        }
-      }
-    }
-
-
     // First pass: Create nodes for all relevant LLVM values (instructions, arguments, constants)
     // This helps in mapping users/operands to graph nodes later.
     for (auto& BB : F) {
         for (auto& I : BB) {
-          if (isa<SelectInst>(&I) || isa<GetElementPtrInst>(&I) ||  isa<BranchInst>(&I))
+          if (isa<SelectInst>(&I) || isa<GetElementPtrInst>(&I)
+            || (isa<BranchInst>(&I) && cast<BranchInst>(&I)->isConditional()) ||
+            isa<ZExtInst>(&I) || isa<SExtInst>(&I))
             continue;
             DataflowOperatorType opType = DataflowOperatorType::Unknown;
             std::string label = "";
@@ -432,6 +408,48 @@ public:
             if (!label.empty()) instNode->Label = label; // Prioritize explicit labels
           }
         }
+    }
+
+    // ==== PASS 1.3: handle all branches up‐front ====
+    for (auto &BB : F) {
+      for (auto &I : BB) {
+        if (auto *BI = dyn_cast<BranchInst>(&I)) {
+          if (BI->isConditional()) {
+            // setup steer nodes and wire condition
+            auto [tS,fS] = createSteers(customGraph,
+                                        BI->getCondition(),
+                                        /*no data value*/ nullptr,
+                                        /*no data value*/ nullptr);
+            BranchSteers[BI] = {tS,fS};
+
+            // Hook the entry stream into each branch-steer
+            DataflowNode *entryStr = getOrCreateFuncEntryStream(customGraph, F);
+            customGraph.addEdge(entryStr, tS);
+            customGraph.addEdge(entryStr, fS);
+
+            // Wire each steer into the first “real” instruction of its successor,
+            // skipping PHI, GEP, ZExt and SExt which we treat as transparent.
+            auto skipPassThroughs = [](BasicBlock *BB) -> Instruction* {
+              for (auto &I : *BB) {
+                //if (isa<PHINode>(I))          continue;
+                if (isa<GetElementPtrInst>(I)) continue;
+                if (isa<ZExtInst>(I))         continue;
+                if (isa<SExtInst>(I))         continue;
+                return &I;
+              }
+              return nullptr;
+            };
+            if (auto *succ = BI->getSuccessor(0)) {
+              if (auto *realI = skipPassThroughs(succ))
+                customGraph.addEdge(tS, customGraph.getOrAdd(realI));
+            }
+            if (auto *succ = BI->getSuccessor(1)) {
+              if (auto *realI = skipPassThroughs(succ))
+                customGraph.addEdge(fS, customGraph.getOrAdd(realI));
+            }
+          } 
+        }
+      }
     }
 
     // Add nodes for function arguments
@@ -524,16 +542,19 @@ public:
           if (isa<BranchInst>(&I)   ||
             isa<PHINode>(&I)      ||
             isa<SelectInst>(&I)   ||
-            isa<GetElementPtrInst>(&I))
+            isa<GetElementPtrInst>(&I) ||
+            isa<ZExtInst>(&I) || isa<SExtInst>(&I))
             continue;
           DataflowNode* sourceNode = customGraph.findNodeForValue(&I);
           // Source node might not exist for instructions we chose to skip (e.g., some control flow)
           // Or if it's a PHINode, we will handle edges in the next pass.
           // skip PHI (handled later), Select (steers), and GEP
-          if (!sourceNode
-            || isa<PHINode>(&I)
-            || isa<SelectInst>(&I)
-            || isa<GetElementPtrInst>(&I))
+          if (!sourceNode ||
+            isa<PHINode>(&I) ||
+            isa<SelectInst>(&I) ||
+            isa<GetElementPtrInst>(&I) ||
+            isa<ZExtInst>(&I) || isa<SExtInst>(&I)
+          )
             continue;
 
           // Handle data dependencies for basic operations
@@ -594,12 +615,25 @@ public:
       for (auto &BB : F) {
          for (auto &I : BB) {
             if (auto *PN = dyn_cast<PHINode>(&I)) {
-                DataflowNode *mergeNode = customGraph.findNodeForValue(PN);
+
+              DataflowNode *mergeNode = customGraph.findNodeForValue(PN);
                 if (!mergeNode) {
                     // This shouldn't happen if Pass 1 is correct, but as a safeguard:
                     mergeNode = customGraph.addNode(DataflowOperatorType::Merge, PN, "M");
                 }
 
+              // —— new: wire in unconditional branches directly to the merge ——
+              for (unsigned i = 0, e = PN->getNumIncomingValues(); i < e; ++i) {
+                BasicBlock *inBB  = PN->getIncomingBlock(i);
+                if (auto *term = dyn_cast<BranchInst>(inBB->getTerminator())) {
+                  // if it's an *un*conditional branch, hook the branch node straight in
+                  if (!term->isConditional()) {
+                    if (auto *brNode = customGraph.findNodeForValue(term))
+                      customGraph.addEdge(brNode, mergeNode);
+                  }
+                }
+              }
+                
                 // Connect incoming values to the Merge node
                 for (unsigned i = 0, e = PN->getNumIncomingValues(); i < e; ++i) {
                   Value      *inVal = PN->getIncomingValue(i);
