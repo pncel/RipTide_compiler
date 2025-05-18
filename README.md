@@ -7,7 +7,7 @@
 *  <span style="color:green;">&#10004;</span> Carry, invariant, T&F steer, stream , order, merge
 *  <span style="color:green;">&#10004;</span> Don't just use register dependecies, use the semantics that the RipTide paper uses
 
-* Carry op not looking correct
+* Implement carry, think about how to handle branches better.
 * Verify dataflow graph with more test cases
   * Does stream work correct?
   * Does this work for more complex functions?

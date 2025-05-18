@@ -21,7 +21,7 @@ echo "Building with Ninja..."
 ninja
 
 echo "Regenerating LLVM IR"
-clang -O2 -S -emit-llvm ../test/test_active.c -o ../test/test_active.ll
+clang -O1 -S -emit-llvm ../test/test_active.c -o ../test/test_active.ll
 
 echo "Running opt with DataflowGraph pass..."
 /usr/local/bin/opt -load-pass-plugin ./DataflowGraph.so -passes=DataflowGraph -disable-output ../test/test_active.ll
