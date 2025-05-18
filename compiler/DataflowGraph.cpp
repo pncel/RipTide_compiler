@@ -92,34 +92,38 @@ struct CustomDataflowGraph {
   void wireValueToNode(Value  *V, DataflowNode *destN) {
     if (!V || !destN) return;
 
-    // 1) If it’s a GEP, unwrap it by wiring its operands
+    // Unwrap GEP transparently
     if (isa<GetElementPtrInst>(V)) {
-      auto *GEP = dyn_cast<GetElementPtrInst>(V);
-      wireValueToNode(GEP->getPointerOperand(), destN);
-      for (Use &IU : GEP->indices())
-        wireValueToNode(IU.get(), destN);
-      return;
-    }
-
-    // 1.5) Handle zero and sign extension istructions
-    if (isa<ZExtInst>(V) || isa<SExtInst>(V)){
-      auto *GEP = dyn_cast<ZExtInst>(V);
-      wireValueToNode(GEP->getOperand(0), destN);
-    }
-
-    // 2) If we already have a real node for V, hook it up directly
-    if (auto *srcN = findNodeForValue(V)) {
-      if (srcN->Type != DataflowOperatorType::Unknown) {
-        addEdge(srcN, destN);
+        auto *GEP = cast<GetElementPtrInst>(V);
+        wireValueToNode(GEP->getPointerOperand(), destN);
+        for (Use &IU : GEP->indices())
+            wireValueToNode(IU.get(), destN);
         return;
-      }
-      // otherwise it’s Unknown—fall through and wire its operands
     }
 
-    // 3) Finally, only if it *is* an Instruction, forward its operands
+    // Handle zero/sign extend transparently
+    if (isa<ZExtInst>(V) || isa<SExtInst>(V)) {
+        if (auto *Z = dyn_cast<ZExtInst>(V)) {
+            wireValueToNode(Z->getOperand(0), destN);
+        } else if (auto *S = dyn_cast<SExtInst>(V)) {
+            wireValueToNode(S->getOperand(0), destN);
+        }
+        return;
+    }
+
+    // If a real node exists, hook up directly
+    if (auto *srcN = findNodeForValue(V)) {
+        if (srcN->Type != DataflowOperatorType::Unknown) {
+            addEdge(srcN, destN);
+            return;
+        }
+        // Unknown → fall through to unwrap
+    }
+
+    // For instructions with operands, recurse
     if (auto *I = dyn_cast<Instruction>(V)) {
-      for (Value *op : I->operand_values())
-        wireValueToNode(op, destN);
+        for (Value *op : I->operand_values())
+            wireValueToNode(op, destN);
     }
 
   }
@@ -510,6 +514,25 @@ public:
       // Pass 2: Add edges based on data dependencies and handle special instructions
       for (auto &BB : F) {
         for (auto &I : BB) {
+          // --- new: wire Load pointer into the Load node ---
+          if (auto *LI = dyn_cast<LoadInst>(&I)) {
+            if (auto *loadNode = customGraph.findNodeForValue(&I)) {
+              // wire the address operand (so GEP→ZExt→%m path reaches the load)
+              customGraph.wireValueToNode(LI->getPointerOperand(), loadNode);
+            }
+            
+          }
+          // --- new: wire Store operands into the Store node ---
+          if (auto *SI = dyn_cast<StoreInst>(&I)) {
+            if (auto *storeNode = customGraph.findNodeForValue(&I)) {
+              // wire the *value* being stored (this is where '%m' travels)
+              customGraph.wireValueToNode(SI->getValueOperand(), storeNode);
+              // wire the *pointer* you're storing into
+              customGraph.wireValueToNode(SI->getPointerOperand(), storeNode);
+            }
+            // no need to do any further wiring for stores
+            continue;
+          }
           // --- new: handle GEP as pure pass-through ---
           if (auto *GEP = dyn_cast<GetElementPtrInst>(&I)) {
             // for each user of the GEP, wire all of GEP’s operands directly to that user
