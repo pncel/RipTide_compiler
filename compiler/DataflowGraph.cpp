@@ -553,6 +553,30 @@ public:
             // skip all the rest of the generic wiring for this instruction
             continue;
           }
+          // --- new: wire ZExt/SExt inputs directly into every user ---
+          if (auto *Z = dyn_cast<ZExtInst>(&I)) {
+            // For each instruction that uses this sext:
+            for (User *U : Z->users()) {
+              if (auto *userInst = dyn_cast<Instruction>(U)) {
+                if (auto *dest = customGraph.findNodeForValue(userInst)) {
+                  // wire the original operand (%m or whatever) straight into the user
+                  customGraph.wireValueToNode(Z->getOperand(0), dest);
+                }
+              }
+            }
+            // no further generic wiring needed
+            continue;
+          }
+          if (auto *S = dyn_cast<SExtInst>(&I)) {
+            for (User *U : S->users()) {
+              if (auto *userInst = dyn_cast<Instruction>(U)) {
+                if (auto *dest = customGraph.findNodeForValue(userInst)) {
+                  customGraph.wireValueToNode(S->getOperand(0), dest);
+                }
+              }
+            }
+            continue;
+          }
           // wire every constant operand into I
           if (DataflowNode *instN = customGraph.findNodeForValue(&I)) {
             for (auto &op : I.operands()) {
@@ -565,8 +589,8 @@ public:
           if (isa<BranchInst>(&I)   ||
             isa<PHINode>(&I)      ||
             isa<SelectInst>(&I)   ||
-            isa<GetElementPtrInst>(&I) ||
-            isa<ZExtInst>(&I) || isa<SExtInst>(&I))
+            isa<GetElementPtrInst>(&I)
+          )
             continue;
           DataflowNode* sourceNode = customGraph.findNodeForValue(&I);
           // Source node might not exist for instructions we chose to skip (e.g., some control flow)
@@ -575,8 +599,7 @@ public:
           if (!sourceNode ||
             isa<PHINode>(&I) ||
             isa<SelectInst>(&I) ||
-            isa<GetElementPtrInst>(&I) ||
-            isa<ZExtInst>(&I) || isa<SExtInst>(&I)
+            isa<GetElementPtrInst>(&I)
           )
             continue;
 
