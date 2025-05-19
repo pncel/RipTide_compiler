@@ -101,13 +101,9 @@ struct CustomDataflowGraph {
         return;
     }
 
-    // Handle zero/sign extend transparently
-    if (isa<ZExtInst>(V) || isa<SExtInst>(V)) {
-        if (auto *Z = dyn_cast<ZExtInst>(V)) {
-            wireValueToNode(Z->getOperand(0), destN);
-        } else if (auto *S = dyn_cast<SExtInst>(V)) {
-            wireValueToNode(S->getOperand(0), destN);
-        }
+     // Handle *any* cast instruction (bitcast, trunc, fptrunc, fpext, sitofp, etc.) transparently
+    if (auto *CI = dyn_cast<CastInst>(V)) {
+        wireValueToNode(CI->getOperand(0), destN);
         return;
     }
 
@@ -134,7 +130,8 @@ struct CustomDataflowGraph {
       if (auto *BI = dyn_cast<BranchInst>(V))
         if (BI->isConditional())
           return nullptr;
-      if (isa<GetElementPtrInst>(V) || isa<ZExtInst>(V) || isa<SExtInst>(V))
+      // never materialize ANY cast instruction as its own node
+      if (isa<GetElementPtrInst>(V) || isa<CastInst>(V))        
         return nullptr;
       if (!V) return nullptr; // Handle null values gracefully
       if (auto *N = findNodeForValue(V)) return N;
@@ -374,7 +371,7 @@ public:
         for (auto& I : BB) {
           if (isa<SelectInst>(&I) || isa<GetElementPtrInst>(&I)
             || (isa<BranchInst>(&I) && cast<BranchInst>(&I)->isConditional()) ||
-            isa<ZExtInst>(&I) || isa<SExtInst>(&I))
+            isa<CastInst>(&I) )
             continue;
             DataflowOperatorType opType = DataflowOperatorType::Unknown;
             std::string label = "";
@@ -437,8 +434,7 @@ public:
               for (auto &I : *BB) {
                 //if (isa<PHINode>(I))          continue;
                 if (isa<GetElementPtrInst>(I)) continue;
-                if (isa<ZExtInst>(I))         continue;
-                if (isa<SExtInst>(I))         continue;
+                if (isa<CastInst>(I))         continue;
                 return &I;
               }
               return nullptr;
@@ -553,28 +549,16 @@ public:
             // skip all the rest of the generic wiring for this instruction
             continue;
           }
-          // --- new: wire ZExt/SExt inputs directly into every user ---
-          if (auto *Z = dyn_cast<ZExtInst>(&I)) {
-            // For each instruction that uses this sext:
-            for (User *U : Z->users()) {
+          // --- new: wire *any* cast inputs directly into each of its users ---
+          if (auto *CI = dyn_cast<CastInst>(&I)) {
+            for (User *U : CI->users()) {
               if (auto *userInst = dyn_cast<Instruction>(U)) {
                 if (auto *dest = customGraph.findNodeForValue(userInst)) {
-                  // wire the original operand (%m or whatever) straight into the user
-                  customGraph.wireValueToNode(Z->getOperand(0), dest);
+                  customGraph.wireValueToNode(CI->getOperand(0), dest);
                 }
               }
             }
-            // no further generic wiring needed
-            continue;
-          }
-          if (auto *S = dyn_cast<SExtInst>(&I)) {
-            for (User *U : S->users()) {
-              if (auto *userInst = dyn_cast<Instruction>(U)) {
-                if (auto *dest = customGraph.findNodeForValue(userInst)) {
-                  customGraph.wireValueToNode(S->getOperand(0), dest);
-                }
-              }
-            }
+            // skip all other wiring for casts
             continue;
           }
           // wire every constant operand into I
