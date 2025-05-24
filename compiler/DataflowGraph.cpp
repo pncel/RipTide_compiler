@@ -70,6 +70,8 @@ struct DataflowNode {
     std::vector<DataflowEdge*> Inputs;
     std::vector<DataflowEdge*> Outputs;
     std::string Label; // Label for the DOT graph
+    std::string OpSymbol;     // NEW: holds “+”, “<=”, etc.
+
 
     // Constructor
     DataflowNode(DataflowOperatorType type, const Value* originalValue = nullptr, const std::string& label = "")
@@ -293,6 +295,8 @@ class DataflowGraph : public PassInfoMixin<DataflowGraph> {
     };
 
     auto getNodeLabel = [](const DataflowNode* node) {
+        if (!node->OpSymbol.empty())
+            return node->OpSymbol;        // show “+”, “<=”, etc
         if (!node->Label.empty()) {
             return node->Label;
         }
@@ -369,29 +373,57 @@ public:
     // This helps in mapping users/operands to graph nodes later.
     for (auto& BB : F) {
         for (auto& I : BB) {
+          std::string sym;
+          ICmpInst *CI = nullptr;
+          FCmpInst *FI = nullptr;
           if (isa<SelectInst>(&I) || isa<GetElementPtrInst>(&I)
             || (isa<BranchInst>(&I) && cast<BranchInst>(&I)->isConditional()) ||
             isa<CastInst>(&I) )
             continue;
-            DataflowOperatorType opType = DataflowOperatorType::Unknown;
-            std::string label = "";
+          DataflowOperatorType opType = DataflowOperatorType::Unknown;
+          std::string label = "";
 
           if (I.isBinaryOp()) {
             opType = DataflowOperatorType::BasicBinaryOp;
             label = Instruction::getOpcodeName(I.getOpcode());
+            switch (I.getOpcode()) {
+              case Instruction::Add:      sym = "+"; break;
+              case Instruction::FAdd:     sym = "+"; break;
+              case Instruction::Sub:      sym = "-"; break;
+              case Instruction::Mul:      sym = "*"; break;
+              case Instruction::UDiv:     sym = "/"; break;
+              // …handle the rest…
+              default:                    sym = Instruction::getOpcodeName(I.getOpcode());
+            }
           } else if (isa<LoadInst>(&I)) {
              opType = DataflowOperatorType::Load;
              label = "ld";
+
           } else if (isa<StoreInst>(&I)) {
               opType = DataflowOperatorType::Store;
               label = "st";
-          } else if (isa<ICmpInst>(&I) || isa<FCmpInst>(&I)) {
+
+          } else if (CI = dyn_cast<ICmpInst>(&I)) {
               // Comparisons will be linked to Steer nodes, create a node for the comparison result
-              opType = DataflowOperatorType::BasicBinaryOp; // Treat comparison as a binary op for its result
               label = Instruction::getOpcodeName(I.getOpcode());
+              opType = DataflowOperatorType::BasicBinaryOp;
+              switch (CI->getPredicate()) {
+                case ICmpInst::ICMP_EQ:  sym = "=="; break;
+                case ICmpInst::ICMP_NE:  sym = "!="; break;
+                case ICmpInst::ICMP_SLT: sym = "<";  break;
+                case ICmpInst::ICMP_SLE: sym = "<="; break;
+                case ICmpInst::ICMP_SGT: sym = ">";  break;
+                case ICmpInst::ICMP_SGE: sym = ">="; break;
+                //—and for unsigned variants if you care, e.g. ICMP_ULT → “<u” etc.
+                default:                 sym = CmpInst::getPredicateName(CI->getPredicate()).str();;
+              }
+          } else if (FI = dyn_cast<FCmpInst>(&I)) {
+              opType = DataflowOperatorType::BasicBinaryOp;
+              sym = CmpInst::getPredicateName(FI->getPredicate()).str(); // e.g. “olt”, “ogt”… or map similarly to symbols 
           } else if (isa<PHINode>(&I)) {
               opType = DataflowOperatorType::Merge;
               label = "M"; // Based on image
+
           } else if (isa<CallInst>(&I)) {
               // Handle function calls - could be basic ops or more complex
               label = "call"; // Generic label for now
@@ -407,6 +439,7 @@ public:
           if (instNode) {
             if (opType != DataflowOperatorType::Unknown) instNode->Type = opType;
             if (!label.empty()) instNode->Label = label; // Prioritize explicit labels
+            instNode->OpSymbol = sym;       // store the symbol
           }
         }
     }
