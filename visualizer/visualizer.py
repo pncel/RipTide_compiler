@@ -49,9 +49,9 @@ def infer_op_metadata(data):
     elif lbl == "STR":
         meta['op'] = 'Stream'
     elif lbl == "T":
-        meta['op'] = 'TS' # True Select
+        meta['op'] = 'TS' # True Steer
     elif lbl == "F":
-        meta['op'] = 'FS' # False Select
+        meta['op'] = 'FS' # False Steer
     elif lbl == 'ret':
         meta['op'] = 'Return'
     else:
@@ -211,7 +211,7 @@ class TokenBasedExecutor:
         elif op_type == 'Load':
             # Assumes arity 2
             addr = current_input_tokens[0].value
-            offset = current_input_tokens[0].value
+            offset = current_input_tokens[1].value
             consumed_count = 2
             value = memory.get(addr + offset) # Returns None if addr not in memory
             if value is not None:
@@ -222,9 +222,9 @@ class TokenBasedExecutor:
         elif op_type == 'Store':
             # Assumes arity 3: value, addr, offset_token
             # IMPORTANT: Assumes predecessors in .dot file are ordered: 1st for address, 2nd for value, 3rd for offset
-            val = current_input_tokens[0].value
+            offset = current_input_tokens[0].value
             addr = current_input_tokens[1].value
-            offset = current_input_tokens[2].value
+            val = current_input_tokens[2].value
             memory[addr+offset] = val
             result_token = Token(val, node) # Store op often outputs the stored value
             consumed_count = 3
@@ -287,22 +287,25 @@ class TokenBasedExecutor:
         
         # Simple execution order: all in the list.
         # More complex schedulers could be implemented here.
+        result_tokens = []
         for node_to_execute in executable_nodes:
             result_tokens.append(self.execute_node(node_to_execute))
 
         
         step_info = {
             'nodes': executable_nodes,
-            'results': [result_token.value for result_token in result_tokens] if result_tokens.len() else None,
+            'results': [rt.value for rt in result_tokens if rt is not None] if result_tokens else None,
             'completed': self.completed,
-            'source_nodes_for_tokens': [result_token.source_node for result_token in result_tokens] if result_tokens.len() else None,
+            'source_nodes_for_tokens': [rt.source_node for rt in result_tokens if rt is not None] if result_tokens else None,
         }
         self.execution_sequence.append(step_info)
         
         for result_token in result_tokens:
             if result_token and not self.completed:
-                for successor in self.G.successors(node_to_execute):
-                    self.add_token(successor, Token(result_token.value, node_to_execute)) # Pass copies of token value
+                for node_to_execute in executable_nodes:
+                    if (result_token.source_node == node_to_execute):
+                        for successor in self.G.successors(node_to_execute):
+                            self.add_token(successor, Token(result_token.value, node_to_execute)) # Pass copies of token value
         
         return step_info
 
@@ -612,7 +615,7 @@ class DataflowSimulator:
             return
 
         # Node colors and sizes
-        executed_nodes_in_seq = {step['node'] for step in self.executor.execution_sequence}
+        executed_nodes_in_seq = [step['nodes'] for step in self.executor.execution_sequence]
         node_colors = []
         node_sizes = []
         
@@ -624,11 +627,11 @@ class DataflowSimulator:
             # A token must have been produced and the simulation not yet completed for edge to be "active" for propagation
             any_returns = False
             for node in last_step['nodes']:
-                if (self.executor.G.nodes[node].get('op') == 'Return')
+                if (self.executor.G.nodes[node].get('op') == 'Return'):
                     any_returns = True
                     break
             if last_step['results'] is not None and not any_returns:
-                for node in last_step['nodes']
+                for node in last_step['nodes']:
                     last_executed_source_node = node # The nodes that just fired and produced output
                     for successor in self.executor.G.successors(last_executed_source_node):
                         active_edges.append((last_executed_source_node, successor))
@@ -636,7 +639,7 @@ class DataflowSimulator:
         for n in self.G.nodes(): # Iterate through original graph G for consistent node display
             op_type = self.G.nodes[n].get('op', 'Unknown')
             
-            if n in last_step['nodes']: # Node that just executed
+            if (self.executor.execution_sequence) and (n in (self.executor.execution_sequence[-1])['nodes']): # Nodes that just executed
                 node_colors.append('orange')
                 node_sizes.append(2000)
             elif n in executed_nodes_in_seq: # Executed in a previous step
@@ -720,7 +723,7 @@ class DataflowSimulator:
             title_text = f"Simulation Complete! Return Value: {self.executor.return_value}"
         elif self.executor.execution_sequence:
             last_step = self.executor.execution_sequence[-1]
-            title_text = f"Step {self.current_step}: Nodes: '{last_step['nodes']}' ({last_step['op_type']}) -> {last_step['result']}"
+            title_text = f"Step {self.current_step}: Nodes: '{last_step['nodes']}' -> {last_step['results']}"
         
         self.ax.set_title(title_text, fontsize=13, fontweight='bold', pad=15)
         
