@@ -116,10 +116,15 @@ class TokenBasedExecutor:
     def can_execute(self, node):
         op_type = self.G.nodes[node].get('op', 'Unknown')
         
+        ## OLD
         # Source nodes can execute if they haven't produced their value yet in this run
-        if op_type in ['Constant', 'FunctionInput', 'Stream']:
-            return node not in self.node_values # Has this node already produced an output?
+        #if op_type in ['Constant', 'FunctionInput', 'Stream']:
+        #    return node not in self.node_values # Has this node already produced an output?
                                                 # Resetting simulation clears node_values.
+        ## NEW
+        # Source nodes can execute every step
+        if op_type in ['Constant', 'FunctionInput', 'Stream']:
+            return True 
 
         # For other nodes, check if enough tokens are available for their arity
         required_inputs = self.get_op_arity(node)
@@ -380,14 +385,14 @@ def read_graph(dot_path):
         return G
 
 
-# Enhanced layout with hierarchical option
+# Enhanced layout with dot option preferred
 def create_enhanced_layout(G, layout_type='dot'):
     if not G.nodes(): # Handle empty graph
         return {}
         
     if layout_type == 'dot':
         try:
-            return nx.drawing.nx_pydot.graphviz_layout(G, prog='dot')
+            return nx.drawing.nx_pydot.graphviz_layout(G, prog='dot') 
         except Exception as e: # Broader exception for any pydot/graphviz issue
             messagebox.showwarning("Layout Error", f"Graphviz 'dot' layout failed: {e}\n"
                                                   "Ensure Graphviz is installed and in PATH, and 'pydot' or 'pygraphviz' Python package is installed.\n"
@@ -604,7 +609,7 @@ class DataflowSimulator:
             # For simplicity, let's try to use the 'dot' layout as a common good one.
             self.layout = create_enhanced_layout(self.G, 'dot') 
             if not self.layout and self.G.nodes(): # If still no layout, try spring
-                 self.layout = create_enhanced_layout(self.G, 'spring')
+                self.layout = create_enhanced_layout(self.G, 'spring')
 
 
         # If layout is still empty after trying, inform user and exit plotting.
@@ -641,38 +646,38 @@ class DataflowSimulator:
             
             if (self.executor.execution_sequence) and (n in (self.executor.execution_sequence[-1])['nodes']): # Nodes that just executed
                 node_colors.append('orange')
-                node_sizes.append(2000)
+                node_sizes.append(800)
             elif n in executed_nodes_in_seq: # Executed in a previous step
                 if op_type == 'Return' and self.executor.completed and self.executor.return_value is not None:
                     node_colors.append('gold')
                 else:
                     node_colors.append('lightgreen')
-                node_sizes.append(1700)
+                node_sizes.append(800)
             else: # Not yet executed
                 if op_type == 'Stream': node_colors.append('salmon')
                 elif op_type == 'FunctionInput': node_colors.append('lightblue')
                 elif op_type == 'Constant': node_colors.append('lightsteelblue')
                 elif op_type == 'Return': node_colors.append('wheat')
                 else: node_colors.append('lightgray')
-                node_sizes.append(1200)
+                node_sizes.append(700)
 
         # Draw edges
         all_edges = list(self.G.edges())
         inactive_edges = [e for e in all_edges if e not in active_edges]
 
         nx.draw_networkx_edges(self.G, self.layout, ax=self.ax, edgelist=inactive_edges,
-                               arrowstyle='->', node_size=node_sizes, arrowsize=20,
-                               edge_color='darkgray', width=1.5, alpha=0.6,
+                               arrowstyle='->', node_size=node_sizes, arrowsize=10,
+                               edge_color='black', width=1.5, alpha=0.8,
                                connectionstyle='arc3,rad=0.1')
         if active_edges:
             nx.draw_networkx_edges(self.G, self.layout, ax=self.ax, edgelist=active_edges,
-                                   arrowstyle='->', node_size=node_sizes, arrowsize=25, # Larger arrow for active
-                                   edge_color='red', width=2.5, alpha=1.0, # Highlight active edge
+                                   arrowstyle='->', node_size=node_sizes, arrowsize=10,
+                                   edge_color='red', width=1.5, alpha=1.0, # Highlight active edge
                                    connectionstyle='arc3,rad=0.1')
         
         # Draw nodes
         nx.draw_networkx_nodes(self.G, self.layout, node_color=node_colors, node_size=node_sizes,
-                               ax=self.ax, linewidths=1.5, edgecolors='black', alpha=0.95)
+                               ax=self.ax, edgecolors='black')
         
         # Labels
         labels = {}
