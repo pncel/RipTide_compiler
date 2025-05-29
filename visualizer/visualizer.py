@@ -73,7 +73,7 @@ class TokenBasedExecutor:
         self.G = G
         self.node_values = {}  # Current computed values for each node (output of the node)
         self.pending_tokens = {}  # Tokens waiting to be consumed by each node's inputs
-        self.execution_sequence = []  # Record of execution steps
+        self.execution_sequence = []  # Record of execution steps (list of step_info dicts)
         self.completed = False
         self.return_value = None
         
@@ -93,20 +93,20 @@ class TokenBasedExecutor:
         """Gets the number of input tokens an operation consumes."""
         op_type = self.G.nodes[node_id].get('op', 'Unknown')
         if op_type in ['Constant', 'FunctionInput', 'Stream']:
-            return 0  # These are source nodes, produce output without consuming input tokens
+            return 0
         elif op_type == 'Load':
             return 2
         elif op_type in ['BasicBinaryOp', 'TS', 'FS']:
             return 2
         elif op_type in ['Merge', 'Store']:
-            # Standard merge takes a decider and two values
-            # Graph must ensure predecessors are ordered: decider, true_val, false_val
             return 3
         elif op_type == 'Return':
-            return len(list(self.G.predecessors(node_id)))
-        else: # Unknown or other types
-            # Fallback: require tokens from all connected predecessors.
-            # This might not be correct for all custom nodes.
+            # Return can have variable inputs, but typically consumes one data token
+            # For simplicity, let's assume it consumes the first available token if any.
+            # If strict arity based on predecessors is needed, it's len(list(self.G.predecessors(node_id)))
+            # but often only one input is the 'data' to return. We'll make it consume 1.
+            return 1 if len(list(self.G.predecessors(node_id))) > 0 else 0
+        else: 
             return len(list(self.G.predecessors(node_id)))
 
     def add_token(self, node, token):
@@ -116,17 +116,9 @@ class TokenBasedExecutor:
     def can_execute(self, node):
         op_type = self.G.nodes[node].get('op', 'Unknown')
         
-        ## OLD
-        # Source nodes can execute if they haven't produced their value yet in this run
-        #if op_type in ['Constant', 'FunctionInput', 'Stream']:
-        #    return node not in self.node_values # Has this node already produced an output?
-                                                # Resetting simulation clears node_values.
-        ## NEW
-        # Source nodes can execute every step
         if op_type in ['Constant', 'FunctionInput', 'Stream']:
             return True 
 
-        # For other nodes, check if enough tokens are available for their arity
         required_inputs = self.get_op_arity(node)
         available_tokens = len(self.pending_tokens[node])
         
@@ -134,16 +126,18 @@ class TokenBasedExecutor:
     
     def execute_node(self, node):
         op_type = self.G.nodes[node].get('op', 'Unknown')
-        
-        # input_tokens are those queued for this node.
-        # We will consume 'arity' number of these for operations that have inputs.
+        op_symbol_for_log = self.G.nodes[node].get('op_symbol', op_type)
+
         current_input_tokens = self.pending_tokens[node] 
-        
         result_token = None
         consumed_count = 0
+        consumed_input_values = []
 
         arity = self.get_op_arity(node)
         
+        if arity > 0 and len(current_input_tokens) >= arity:
+            consumed_input_values = [t.value for t in current_input_tokens[:arity]]
+
         if op_type == 'Constant':
             value = self.G.nodes[node].get('value', 0)
             result_token = Token(value, node)
@@ -153,128 +147,114 @@ class TokenBasedExecutor:
             result_token = Token(value, node)
         
         elif op_type == 'Stream':
-            result_token = Token(True, node) # Stream node generates an activation token
+            result_token = Token(True, node)
         
         elif op_type == 'BasicBinaryOp':
-            # Assumes get_op_arity returned 2 and can_execute confirmed enough tokens
-            a_val = current_input_tokens[0].value
-            b_val = current_input_tokens[1].value
-            consumed_count = 2
-            op_symbol = self.G.nodes[node].get('op_symbol', '+')
-            
-            # Handle boolean inputs by converting to int (True=1, False=0) for arithmetic
-            # This allows stream tokens to participate in simple arithmetic if intended
-            if isinstance(a_val, bool): a_val = int(a_val)
-            if isinstance(b_val, bool): b_val = int(b_val)
+            if arity == 2 and len(consumed_input_values) == 2:
+                a_val, b_val = consumed_input_values[0], consumed_input_values[1]
+                consumed_count = 2
+                op_symbol = self.G.nodes[node].get('op_symbol', '+')
+                op_symbol_for_log = op_symbol
+                
+                if isinstance(a_val, bool): a_val = int(a_val)
+                if isinstance(b_val, bool): b_val = int(b_val)
 
-            if op_symbol == '+':
-                # If both are numbers (int or float), add them. Otherwise, concatenate as strings.
-                if isinstance(a_val, (int, float)) and isinstance(b_val, (int, float)):
-                    result = a_val + b_val
-                else:
-                    result = str(a_val) + str(b_val)
-            elif op_symbol == '-':
-                # Attempt numeric comparison first, fallback to string if types mismatch for numeric
-                try:
-                    result = a_val - b_val
-                except:
-                    result = str(a_val) - str(b_val)
-            elif op_symbol == '<<':
-                # Attempt numeric comparison first, fallback to string if types mismatch for numeric
-                try: 
-                    result = a_val << b_val
-                except:
-                    result = str(a_val) << str(b_val)
-            elif op_symbol == '>>':
-                # Attempt numeric comparison first, fallback to string if types mismatch for numeric
-                try:
-                    result = a_val >> b_val
-                except:
-                    result = str(a_val) >> str(b_val)
-            elif op_symbol == '>':
-                # Attempt numeric comparison first, fallback to string if types mismatch for numeric
-                try:
-                    result = a_val > b_val
-                except TypeError: # e.g. comparing int and string
-                    result = str(a_val) > str(b_val)
-            elif op_symbol == '<':
-                # Attempt numeric comparison first, fallback to string if types mismatch for numeric
-                try:
-                    result = a_val < b_val
-                except TypeError: # e.g. comparing int and string
-                    result = str(a_val) < str(b_val)
-            elif op_symbol == '==':
-                result = a_val == b_val # Handles mixed types appropriately
-            elif op_symbol == '!=':
-                result = not (a_val == b_val) # Handles mixed types appropriately
-            else:
-                result = None # Unknown binary operation symbol
-            
-            if result is not None:
-                result_token = Token(result, node)
+                if op_symbol == '+':
+                    if isinstance(a_val, (int, float)) and isinstance(b_val, (int, float)):
+                        result = a_val + b_val
+                    else:
+                        result = str(a_val) + str(b_val)
+                elif op_symbol == '-':
+                    try: result = a_val - b_val
+                    except: result = str(a_val) + "-" + str(b_val) # Placeholder for non-numeric
+                elif op_symbol == '<<':
+                    try: result = a_val << b_val
+                    except: result = str(a_val) + "<<" + str(b_val)
+                elif op_symbol == '>>':
+                    try: result = a_val >> b_val
+                    except: result = str(a_val) + ">>" + str(b_val)
+                elif op_symbol == '>':
+                    try: result = a_val > b_val
+                    except TypeError: result = str(a_val) > str(b_val)
+                elif op_symbol == '<':
+                    try: result = a_val < b_val
+                    except TypeError: result = str(a_val) < str(b_val)
+                elif op_symbol == '==':
+                    result = a_val == b_val
+                elif op_symbol == '!=':
+                    result = not (a_val == b_val)
+                else: result = None
+                
+                if result is not None: result_token = Token(result, node)
         
         elif op_type == 'Load':
-            # Assumes arity 2
-            addr = current_input_tokens[0].value
-            offset = current_input_tokens[1].value
-            consumed_count = 2
-            value = memory.get(addr + offset) # Returns None if addr not in memory
-            if value is not None:
-                result_token = Token(value, node)
-            # If value is None (address not found), no token is propagated.
-            # This means downstream nodes waiting for this load will not activate.
+            if arity == 2 and len(consumed_input_values) == 2:
+                addr, offset_val = consumed_input_values[0], consumed_input_values[1] # Corrected order based on typical usage
+                consumed_count = 2
+                final_address = addr + offset_val if isinstance(addr, (int,float)) and isinstance(offset_val, (int,float)) else addr # Fallback if not numeric
+                value = memory.get(final_address)
+                if value is not None: result_token = Token(value, node)
         
         elif op_type == 'Store':
-            # Assumes arity 3: value, addr, offset_token
-            # IMPORTANT: Assumes predecessors in .dot file are ordered: 1st for address, 2nd for value, 3rd for offset
-            offset = current_input_tokens[0].value
-            addr = current_input_tokens[1].value
-            val = current_input_tokens[2].value
-            memory[addr+offset] = val
-            result_token = Token(val, node) # Store op often outputs the stored value
-            consumed_count = 3
+            if arity == 3 and len(consumed_input_values) == 3:
+                # Assuming order from .dot: offset, addr, val (adjust if this is wrong for your .dot files)
+                # Or more typically: addr, value, (optional offset or control)
+                # Let's assume inputs are: addr, val, offset for consistency with typical Store ops
+                addr, val_to_store, offset = consumed_input_values[0], consumed_input_values[1], consumed_input_values[2]
+                consumed_count = 3
+                final_address = addr + offset if isinstance(addr, (int,float)) and isinstance(offset, (int,float)) else addr # Fallback
+                memory[final_address] = val_to_store
+                result_token = Token(val_to_store, node)
         
-        elif op_type == 'TS': # True Steer
-            # Assumes arity 2: condition_token, value_token
-            cond = current_input_tokens[0].value
-            val = current_input_tokens[1].value
-            consumed_count = 2
-            if cond: # Truthy check
-                result_token = Token(val, node)
+        elif op_type == 'TS': 
+            if arity == 2 and len(consumed_input_values) == 2:
+                cond, val = consumed_input_values[0], consumed_input_values[1]
+                consumed_count = 2
+                if cond: result_token = Token(val, node)
         
-        elif op_type == 'FS': # False Steer
-            # Assumes arity 2: condition_token, value_token
-            cond = current_input_tokens[0].value
-            val = current_input_tokens[1].value
-            consumed_count = 2
-            if not cond: # Falsy check
-                result_token = Token(val, node)
+        elif op_type == 'FS':
+            if arity == 2 and len(consumed_input_values) == 2:
+                cond, val = consumed_input_values[0], consumed_input_values[1]
+                consumed_count = 2
+                if not cond: result_token = Token(val, node)
         
         elif op_type == 'Merge':
-            # Assumes arity 3: decider_token, true_value_token, false_value_token
-            # IMPORTANT: Assumes predecessors in .dot file are ordered correctly.
-            decider = current_input_tokens[0].value
-            true_val = current_input_tokens[1].value
-            false_val = current_input_tokens[2].value
-            consumed_count = 3
-            result = true_val if decider else false_val
-            result_token = Token(result, node)
+            if arity == 3 and len(consumed_input_values) == 3:
+                decider, true_val, false_val = consumed_input_values[0], consumed_input_values[1], consumed_input_values[2]
+                consumed_count = 3
+                result = true_val if decider else false_val
+                result_token = Token(result, node)
         
         elif op_type == 'Return':
-            # Assumes arity 1
-            if current_input_tokens: # Check if there's at least one token
-                self.return_value = current_input_tokens[0].value
+            if arity > 0 and consumed_input_values: # Requires at least one input based on arity
+                self.return_value = consumed_input_values[0] # Return the first consumed input
                 self.completed = True
                 result_token = Token(self.return_value, node)
-                consumed_count = 1
+                consumed_count = arity # Consume all defined inputs for return
+            elif arity == 0: # Return node with no predecessors, can complete
+                 self.completed = True
+                 self.return_value = None # Or a default value
+                 result_token = Token(self.return_value, node)
+
 
         if result_token:
             self.node_values[node] = result_token.value
             
-        if consumed_count > 0:
+        if consumed_count > 0: # Ensure only consumed tokens are removed
             self.pending_tokens[node] = self.pending_tokens[node][consumed_count:]
-        
-        return result_token
+        elif arity > 0 and consumed_count == 0 and op_type not in ['Constant', 'FunctionInput', 'Stream']:
+            # This case implies an op had arity, but didn't logically consume inputs
+            # (e.g. condition failed in TS/FS before consumption was set, or Load failed)
+            # We still need to remove the tokens that were checked for arity
+            self.pending_tokens[node] = self.pending_tokens[node][arity:]
+
+
+        return {
+            'node_id': node,
+            'result_token': result_token,
+            'consumed_inputs': consumed_input_values if consumed_count > 0 else ([t.value for t in current_input_tokens[:arity]] if arity > 0 else []), # Log what was available if not consumed
+            'op_label': op_symbol_for_log
+        }
     
     def step(self):
         if self.completed:
@@ -283,34 +263,28 @@ class TokenBasedExecutor:
         executable_nodes = [node for node in self.G.nodes() if self.can_execute(node)]
         
         if not executable_nodes:
-            # Try to find any pending tokens to see if graph is stuck
             stuck = any(self.pending_tokens[n] for n in self.pending_tokens)
-            if stuck and not self.completed:
-                # print("Warning: No node can execute, but pending tokens exist. Graph might be stuck or require more inputs.")
-                pass # Keep this silent for now, GUI will show "No Progress"
-            return None
+            # No return here, GUI will handle status
+            return None 
         
-        # Simple execution order: all in the list.
-        # More complex schedulers could be implemented here.
-        result_tokens = []
+        execution_details_for_step = []
         for node_to_execute in executable_nodes:
-            result_tokens.append(self.execute_node(node_to_execute))
-
+            detail = self.execute_node(node_to_execute)
+            execution_details_for_step.append(detail)
         
         step_info = {
-            'nodes': executable_nodes,
-            'results': [rt.value for rt in result_tokens if rt is not None] if result_tokens else None,
+            'execution_details': execution_details_for_step,
             'completed': self.completed,
-            'source_nodes_for_tokens': [rt.source_node for rt in result_tokens if rt is not None] if result_tokens else None,
         }
         self.execution_sequence.append(step_info)
         
-        for result_token in result_tokens:
-            if result_token and not self.completed:
-                for node_to_execute in executable_nodes:
-                    if (result_token.source_node == node_to_execute):
-                        for successor in self.G.successors(node_to_execute):
-                            self.add_token(successor, Token(result_token.value, node_to_execute)) # Pass copies of token value
+        if not self.completed:
+            for detail in execution_details_for_step:
+                result_token = detail['result_token']
+                if result_token: # Check if a token was actually produced
+                    source_node = detail['node_id'] 
+                    for successor in self.G.successors(source_node):
+                        self.add_token(successor, Token(result_token.value, source_node))
         
         return step_info
 
@@ -319,23 +293,13 @@ class TokenBasedExecutor:
 def read_graph(dot_path):
     try:
         G_raw = nx.drawing.nx_pydot.read_dot(dot_path)
-        # Ensure G is a DiGraph, not MultiDiGraph, for simplicity in this executor.
-        # If multiple edges exist between two nodes from pydot, this takes one.
-        # For dataflow, usually one functional edge is intended.
         G = nx.DiGraph()
-        if G_raw.nodes(): #Check if graph is not empty
+        if G_raw.nodes(): 
             G.add_nodes_from(G_raw.nodes(data=True))
-            # For edges, ensure they are added with any attributes from the .dot file
-            # though this example doesn't explicitly use edge attributes for execution logic.
             G.add_edges_from(G_raw.edges(data=True))
 
         for n in G.nodes():
-            # pydot might store attributes in a 'value' sub-dictionary or directly
             node_attrs = G.nodes[n]
-            # If 'label' is not directly an attribute, pydot might place it inside 'value'
-            # This can happen if the .dot node is defined like: node1 [label="val", value="other_val"]
-            # However, standard .dot for graphviz usually means label is the primary display.
-            # The provided infer_op_metadata expects 'label' and 'shape' at the top level of node_attrs.
             meta = infer_op_metadata(node_attrs)
             for k, v in meta.items():
                 G.nodes[n][k] = v
@@ -343,88 +307,42 @@ def read_graph(dot_path):
     except Exception as e:
         print(f"Error reading graph: {e}")
         messagebox.showerror("Graph Read Error", f"Could not read or parse .dot file: {dot_path}\n{e}\nLoading a default example graph.")
-        G = nx.DiGraph()
-        G.add_node('source1', op='Stream', label='STR')
-        G.add_node('val_A', op='FunctionInput', param_name='%A', arg_value=5, label='%A')
-        G.add_node('val_B', op='Constant', value=10, label='Const\n10')
-        G.add_node('add_op', op='BasicBinaryOp', op_symbol='+', label='+')
-        G.add_node('cond_op', op='BasicBinaryOp', op_symbol='>', label='>') # e.g. A > B
-        G.add_node('ts_op', op='TS', label='T') # True select
-        G.add_node('const_true_path', op='Constant', value=100, label='Const\n100')
-        G.add_node('return_node', op='Return', label='ret')
-        
-        # Edges for add_op: source1 (control), val_A, val_B
-        # Let's assume add_op only uses val_A and val_B, stream is for broader flow control
-        # If '+' takes 2 inputs, Stream token might be consumed if not handled by arity
-        # With current arity logic, BasicBinaryOp '+' will take 2 tokens.
-        # For this example, let's make it simpler: A+B
-        G.add_edge('val_A', 'add_op')
-        G.add_edge('val_B', 'add_op')
-
-        # Condition: Is A > B?
-        G.add_edge('val_A', 'cond_op') # input 1 for '>'
-        G.add_edge('val_B', 'cond_op') # input 2 for '>'
-
-        # TS inputs: condition, value if true
-        G.add_edge('cond_op', 'ts_op') # condition
-        G.add_edge('const_true_path', 'ts_op') # value if true
-
-        # Final path: result of add_op (if condition false) or result of ts_op (if true)
-        # This would typically need a Merge node. For simplicity, let's make TS output to return.
-        # Or let add_op output to return and ts_op also, demonstrating multiple paths to return.
-        # A return node should ideally have one input.
-        # Let's simplify: (A+B) is returned if A > B is true (using TS)
-        G.add_edge('add_op', 'ts_op', port_order=1) # Value if true (re-route for demo)
-        G.add_edge('ts_op', 'return_node')
-        
-        # Add metadata again as it might have been missed for default graph
-        for n_id in G.nodes():
+        G = nx.DiGraph() # Minimal default graph
+        G.add_node('inp', op='FunctionInput', param_name='%A', arg_value=5, label='%A')
+        G.add_node('const', op='Constant', value=10, label='Const\n10')
+        G.add_node('add', op='BasicBinaryOp', op_symbol='+', label='+')
+        G.add_node('ret', op='Return', label='ret')
+        G.add_edge('inp', 'add')
+        G.add_edge('const', 'add')
+        G.add_edge('add', 'ret')
+        for n_id in G.nodes(): # Re-apply metadata for default
             meta = infer_op_metadata(G.nodes[n_id])
-            for k, v in meta.items():
-                G.nodes[n_id][k] = v
+            for k,v in meta.items(): G.nodes[n_id][k] = v
         return G
 
 
 # Enhanced layout with dot option preferred
 def create_enhanced_layout(G, layout_type='dot'):
-    if not G.nodes(): # Handle empty graph
-        return {}
-        
-    if layout_type == 'dot':
-        try:
-            return nx.drawing.nx_pydot.graphviz_layout(G, prog='dot') 
-        except Exception as e: # Broader exception for any pydot/graphviz issue
-            messagebox.showwarning("Layout Error", f"Graphviz 'dot' layout failed: {e}\n"
-                                                  "Ensure Graphviz is installed and in PATH, and 'pydot' or 'pygraphviz' Python package is installed.\n"
-                                                  "Falling back to spring layout.")
-            return nx.spring_layout(G, k=0.5, iterations=50) # Fallback
-    elif layout_type == 'neato':
-        try:
-            return nx.drawing.nx_pydot.graphviz_layout(G, prog='neato')
-        except Exception as e:
-            messagebox.showwarning("Layout Error", f"Graphviz 'neato' layout failed: {e}\nFalling back to spring layout.")
-            return nx.spring_layout(G, k=0.5, iterations=50)
-    elif layout_type == 'spring':
-        pos = nx.spring_layout(G, k=0.5/(G.number_of_nodes()**0.5) if G.number_of_nodes() > 0 else 0.5, iterations=100)
-    elif layout_type == 'shell':
-        pos = nx.shell_layout(G, scale=2.0)
-    elif layout_type == 'spectral':
-        pos = nx.spectral_layout(G, scale=2.0)
-    elif layout_type == 'kamada_kawai':
-        pos = nx.kamada_kawai_layout(G, scale=1.0)
-    else: # Default to spring if unknown
-        pos = nx.spring_layout(G, k=0.5/(G.number_of_nodes()**0.5) if G.number_of_nodes() > 0 else 0.5, iterations=100)
-    
-    # Standardize scaling for non-Graphviz layouts if needed, but usually they self-scale.
-    # The hierarchical layout above produces well-spaced coordinates.
-    return pos
+    if not G.nodes(): return {}
+    try:
+        if layout_type == 'dot': return nx.drawing.nx_pydot.graphviz_layout(G, prog='dot') 
+        elif layout_type == 'neato': return nx.drawing.nx_pydot.graphviz_layout(G, prog='neato')
+    except Exception as e:
+        messagebox.showwarning("Layout Error", f"Graphviz '{layout_type}' layout failed: {e}\nFalling back to spring layout.")
+    # Fallback layouts
+    if layout_type in ['spring', 'dot', 'neato']: # dot/neato fallback here
+        return nx.spring_layout(G, k=0.5/(G.number_of_nodes()**0.5) if G.number_of_nodes() > 0 else 0.5, iterations=100)
+    elif layout_type == 'shell': return nx.shell_layout(G, scale=2.0)
+    elif layout_type == 'spectral': return nx.spectral_layout(G, scale=2.0)
+    elif layout_type == 'kamada_kawai': return nx.kamada_kawai_layout(G, scale=1.0)
+    else: return nx.spring_layout(G, k=0.5/(G.number_of_nodes()**0.5) if G.number_of_nodes() > 0 else 0.5, iterations=100)
 
 
 class DataflowSimulator:
     def __init__(self, root, G, layout):
         self.root = root
         self.root.title("Token-Based Dataflow Simulation")
-        self.root.geometry("1400x1000")
+        self.root.geometry("1400x1000") 
         self.root.configure(bg='#f0f0f0')
         
         self.G = G
@@ -437,118 +355,102 @@ class DataflowSimulator:
             if self.G.nodes[node_id].get('op') == 'FunctionInput':
                 self.input_values[node_id] = self.G.nodes[node_id].get('arg_value', 0)
         
-        self.executor = TokenBasedExecutor(self.G.copy()) # Simulate on a copy
+        self.executor = TokenBasedExecutor(self.G.copy())
         
         self.create_widgets()
-        self.reset_simulation() # This will call update_plot
+        self.reset_simulation()
 
     def create_widgets(self):
         main_frame = tk.Frame(self.root, bg='#f0f0f0')
         main_frame.pack(fill='both', expand=True, padx=10, pady=10)
         
-        graph_frame = tk.Frame(main_frame, bg='white', relief='sunken', bd=2)
-        graph_frame.pack(fill='both', expand=True, side='top')
-        
-        self.fig, self.ax = plt.subplots(figsize=(14, 8)) # Adjusted for visibility
-        self.fig.patch.set_facecolor('white')
-        
-        self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
-        self.canvas.get_tk_widget().pack(fill='both', expand=True, padx=5, pady=5)
-        
-        control_frame = tk.Frame(main_frame, bg='#e0e0e0', relief='raised', bd=2, height=200) # Increased height for controls
-        control_frame.pack(fill='x', side='bottom', pady=(10, 0))
-        control_frame.pack_propagate(False)
+        # Control frame (packed first from the bottom to reserve its space)
+        # MODIFIED: Reduced height from 200 to 160
+        control_frame = tk.Frame(main_frame, bg='#e0e0e0', relief='raised', bd=2, height=160) 
+        control_frame.pack(side='bottom', fill='x', pady=(10, 0))
+        control_frame.pack_propagate(False) # Prevent child widgets from shrinking it
         
         control_inner = tk.Frame(control_frame, bg='#e0e0e0')
-        control_inner.pack(fill='both', expand=True, padx=10, pady=10) # More padding
+        control_inner.pack(fill='both', expand=True, padx=10, pady=10)
         
         input_outer_frame = tk.LabelFrame(control_inner, text="Function Inputs", 
                                   font=("Arial", 11, "bold"), bg='#e0e0e0', fg='#333')
         input_outer_frame.pack(side='left', fill='both', expand=True, padx=(0, 10))
         
-        # Scrollable frame for inputs
         input_canvas = tk.Canvas(input_outer_frame, bg='#e0e0e0', highlightthickness=0)
         input_scrollbar = ttk.Scrollbar(input_outer_frame, orient="vertical", command=input_canvas.yview)
-        scrollable_input_frame = ttk.Frame(input_canvas, style='Inputs.TFrame') # Use ttk.Frame for better styling options
-        
+        scrollable_input_frame = ttk.Frame(input_canvas, style='Inputs.TFrame')
         style = ttk.Style()
         style.configure('Inputs.TFrame', background='#e0e0e0')
-
-        scrollable_input_frame.bind(
-            "<Configure>",
-            lambda e: input_canvas.configure(scrollregion=input_canvas.bbox("all"))
-        )
-        
-        input_canvas_window = input_canvas.create_window((0, 0), window=scrollable_input_frame, anchor="nw")
+        scrollable_input_frame.bind("<Configure>", lambda e: input_canvas.configure(scrollregion=input_canvas.bbox("all")))
+        input_canvas.create_window((0, 0), window=scrollable_input_frame, anchor="nw")
         input_canvas.configure(yscrollcommand=input_scrollbar.set)
         
-        input_nodes_data = []
-        for node_id in sorted(self.G.nodes()): # Sort for consistent order
-            node_data = self.G.nodes[node_id]
-            if node_data.get('op') == 'FunctionInput':
-                input_nodes_data.append((node_id, node_data))
-        
+        input_nodes_data = [(nid, nd) for nid, nd in self.G.nodes(data=True) if nd.get('op') == 'FunctionInput']
         if input_nodes_data:
-            for i, (node_id, node_data) in enumerate(input_nodes_data):
+            for i, (node_id, node_data) in enumerate(sorted(input_nodes_data)):
                 row_frame = tk.Frame(scrollable_input_frame, bg='#e0e0e0')
-                row_frame.pack(fill='x', padx=5, pady=(2,3)) # Compact padding
-                
+                row_frame.pack(fill='x', padx=5, pady=(2,3))
                 param_name = node_data.get('param_name', f'Node {node_id}').strip('"')
-                tk.Label(row_frame, text=f"{param_name}:", font=("Arial", 10), 
-                        bg='#e0e0e0', width=15, anchor='e').pack(side='left') # Increased width for names
-                
+                tk.Label(row_frame, text=f"{param_name}:", font=("Arial", 10), bg='#e0e0e0', width=15, anchor='e').pack(side='left')
                 var = tk.StringVar(value=str(self.input_values.get(node_id, 0)))
-                entry = tk.Entry(row_frame, textvariable=var, font=("Arial", 10), width=10) # Wider entry
+                entry = tk.Entry(row_frame, textvariable=var, font=("Arial", 10), width=10)
                 entry.pack(side='left', padx=(5, 0))
-                
                 self.input_widgets[node_id] = var
-                # Use a lambda with default argument to capture current node_id
                 var.trace_add('write', lambda name, index, mode, nid=node_id: self.on_input_change(nid))
-            
             input_canvas.pack(side="left", fill="both", expand=True)
             input_scrollbar.pack(side="right", fill="y")
         else:
-            tk.Label(input_outer_frame, text="No function inputs in graph.", 
-                    font=("Arial", 10), bg='#e0e0e0').pack(padx=10, pady=20, anchor='center')
-        
-        control_right = tk.LabelFrame(control_inner, text="Simulation Control", 
-                                    font=("Arial", 11, "bold"), bg='#e0e0e0', fg='#333')
-        control_right.pack(side='right', fill='y', padx=(10, 0), ipadx=10) # Added ipadx
-        
+            tk.Label(input_outer_frame, text="No function inputs in graph.", font=("Arial", 10), bg='#e0e0e0').pack(padx=10, pady=20, anchor='center')
+
+        control_right = tk.LabelFrame(control_inner, text="Simulation Control", font=("Arial", 11, "bold"), bg='#e0e0e0', fg='#333')
+        control_right.pack(side='right', fill='y', padx=(10, 0), ipadx=10)
         center_frame = tk.Frame(control_right, bg='#e0e0e0')
-        center_frame.pack(expand=True, pady=10) # Added padding
-        
-        self.step_button = tk.Button(center_frame, text="Next Step", command=self.next_step,
-                                   font=("Arial", 12, "bold"), bg='#4CAF50', fg='white',
-                                   padx=20, pady=8, relief='raised', bd=3, width=12)
-        self.step_button.pack(pady=(5, 8)) # Adjusted padding
-        
-        self.reset_button = tk.Button(center_frame, text="Reset", command=self.reset_simulation,
-                                    font=("Arial", 10), bg='#f44336', fg='white',
-                                    padx=15, pady=5, relief='raised', bd=2, width=12)
+        center_frame.pack(expand=True, pady=10)
+        self.step_button = tk.Button(center_frame, text="Next Step", command=self.next_step, font=("Arial", 12, "bold"), bg='#4CAF50', fg='white', padx=20, pady=8, relief='raised', bd=3, width=12)
+        self.step_button.pack(pady=(5, 8))
+        self.reset_button = tk.Button(center_frame, text="Reset", command=self.reset_simulation, font=("Arial", 10), bg='#f44336', fg='white', padx=15, pady=5, relief='raised', bd=2, width=12)
         self.reset_button.pack(pady=8)
-        
-        self.status_label = tk.Label(center_frame, text="Step: 0", 
-                                   font=("Arial", 11, "bold"), bg='#e0e0e0', height=2) # Ensure height for status
+        self.status_label = tk.Label(center_frame, text="Step: 0", font=("Arial", 11, "bold"), bg='#e0e0e0', height=2) # Assuming status_label should be here
         self.status_label.pack(pady=(8, 5))
+
+
+        # Log display frame (packed next from the bottom, placing it above controls)
+        log_display_frame = tk.LabelFrame(main_frame, text="Execution Log", 
+                                          font=("Arial", 11, "bold"), bg='#f0f0f0', fg='#333', relief='groove', bd=2)
+        log_display_frame.pack(side='bottom', fill='x', pady=(5, 0), ipady=2)
+
+        # MODIFIED: Reduced height from 8 to 5 lines
+        self.log_text_area = tk.Text(log_display_frame, height=5, wrap=tk.WORD, state='disabled', 
+                                     font=("Courier New", 9), bg="#ffffff", relief="sunken", bd=1,
+                                     tabs=("1c",)) 
+        log_scrollbar = ttk.Scrollbar(log_display_frame, orient="vertical", command=self.log_text_area.yview)
+        self.log_text_area.config(yscrollcommand=log_scrollbar.set)
+        
+        log_scrollbar.pack(side='right', fill='y', padx=(0,2), pady=2)
+        self.log_text_area.pack(side='left', fill='both', expand=True, padx=2, pady=2)
+
+
+        # Graph frame (packed from the top, takes all remaining space)
+        graph_frame = tk.Frame(main_frame, bg='white', relief='sunken', bd=2)
+        graph_frame.pack(side='top', fill='both', expand=True)
+        
+        self.fig, self.ax = plt.subplots(figsize=(14, 7)) 
+        self.fig.patch.set_facecolor('white')
+        self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
+        self.canvas.get_tk_widget().pack(fill='both', expand=True, padx=5, pady=5)
 
 
     def on_input_change(self, node_id):
         try:
-            # Try to parse as int, then float, then keep as string if fails
             val_str = self.input_widgets[node_id].get().strip()
-            try:
-                value = int(val_str)
+            try: value = int(val_str)
             except ValueError:
-                try:
-                    value = float(val_str)
-                except ValueError:
-                    value = val_str # Keep as string if not number
-        except ValueError: # Should not happen with string fallback
-            value = 0 # Default if entry is invalid (e.g. empty string for int/float)
+                try: value = float(val_str)
+                except ValueError: value = val_str 
+        except ValueError: value = 0 
         
         self.input_values[node_id] = value
-        # Update the main graph G, which will be copied by executor on reset
         if node_id in self.G.nodes:
              self.G.nodes[node_id]['arg_value'] = value
         self.reset_simulation()
@@ -558,102 +460,142 @@ class DataflowSimulator:
         memory.clear()
         self.current_step = 0
         
-        # Create a fresh copy of G, potentially updated with new input_values
         current_G_copy = self.G.copy()
         for node_id, value in self.input_values.items():
             if node_id in current_G_copy.nodes and current_G_copy.nodes[node_id].get('op') == 'FunctionInput':
                 current_G_copy.nodes[node_id]['arg_value'] = value
         
         self.executor = TokenBasedExecutor(current_G_copy)
-        # No need to call executor.reset() here as it's a new instance
         
         self.step_button.config(text="Next Step", state='normal', bg='#4CAF50')
         self.status_label.config(text="Step: 0. Ready.")
+
+        # Clear and update logger
+        self.log_text_area.config(state='normal')
+        self.log_text_area.delete('1.0', tk.END)
+        self.log_text_area.insert(tk.END, "Simulation reset. Ready to start.\n")
+        self.log_text_area.config(state='disabled')
+        
         self.update_plot()
 
     def next_step(self):
-        if not self.executor.completed:
-            step_info = self.executor.step()
-            if step_info:
-                self.current_step += 1
-                self.update_plot() # update_plot will use executor.execution_sequence
-                last_executed_nodes = step_info['nodes']
-                results = step_info['results']
-                self.status_label.config(text=f"Step: {self.current_step}. Nodes: {last_executed_nodes} -> {results}")
+        if self.executor.completed:
+            return
+
+        step_info = self.executor.step()
+        log_entry_header_written = False
+
+        if step_info and step_info.get('execution_details'):
+            self.current_step += 1
+            
+            self.log_text_area.config(state='normal')
+            log_header = f"--- Step {self.current_step} ---\n"
+            self.log_text_area.insert(tk.END, log_header)
+            log_entry_header_written = True
+
+            executed_node_ids_this_step = []
+            result_values_this_step = []
+
+            for detail in step_info['execution_details']:
+                node_id = detail['node_id']
+                op_label = detail['op_label']
+                inputs_str = ",".join(map(str, detail['consumed_inputs'])) if detail['consumed_inputs'] else "N/A"
                 
-                if self.executor.completed:
-                    self.step_button.config(text=f"Done! Ret: {self.executor.return_value}", state='disabled', bg='#007ACC')
-                    self.status_label.config(text=f"Completed! Return: {self.executor.return_value}")
-            else: # No step_info means no node could execute
-                self.step_button.config(text="No Progress", state='disabled', bg='#FFA500')
-                pending_tokens_exist = any(self.executor.pending_tokens[n] for n in self.executor.pending_tokens if self.executor.pending_tokens[n])
-                if pending_tokens_exist and not self.executor.completed:
-                     self.status_label.config(text=f"Step: {self.current_step}. Stuck. Pending tokens exist.")
-                elif not self.executor.completed:
-                     self.status_label.config(text=f"Step: {self.current_step}. Stuck. No executable nodes.")
+                output_val_str = "N/A (no output)"
+                if detail['result_token']:
+                    val = detail['result_token'].value
+                    if isinstance(val, float): output_val_str = f"{val:.2f}"
+                    else: output_val_str = str(val)
+                
+                log_line = f"Node{node_id}:\t{op_label},\tIn:[{inputs_str}],\tOut:{output_val_str}\n"
+                self.log_text_area.insert(tk.END, log_line)
+
+                executed_node_ids_this_step.append(node_id)
+                if detail['result_token']:
+                    result_values_this_step.append(detail['result_token'].value)
+            
+            self.status_label.config(text=f"Step: {self.current_step}. Nodes: {executed_node_ids_this_step} -> {result_values_this_step}")
+            
+            if self.executor.completed:
+                ret_val_str = f"{self.executor.return_value:.2f}" if isinstance(self.executor.return_value, float) else str(self.executor.return_value)
+                self.step_button.config(text=f"Done! Ret: {ret_val_str}", state='disabled', bg='#007ACC')
+                self.status_label.config(text=f"Completed! Return: {ret_val_str}")
+                self.log_text_area.insert(tk.END, f"--- Simulation Completed. Return Value: {ret_val_str} ---\n")
+            
+            self.log_text_area.see(tk.END)
+            self.log_text_area.config(state='disabled')
+            self.update_plot()
+
+        else: # No step_info or no execution_details means no node could execute
+            self.step_button.config(text="No Progress", state='disabled', bg='#FFA500')
+            pending_tokens_exist = any(self.executor.pending_tokens[n] for n in self.executor.pending_tokens if self.executor.pending_tokens[n])
+            
+            self.log_text_area.config(state='normal')
+            if not log_entry_header_written: # In case current_step wasn't incremented
+                 self.log_text_area.insert(tk.END, f"--- Step {self.current_step + 1} (Attempt) ---\n")
+
+            stuck_msg_status = f"Step: {self.current_step}. Stuck. "
+            log_msg_details = "No node could execute.\n"
+            if pending_tokens_exist and not self.executor.completed:
+                stuck_msg_status += "Pending tokens exist."
+                log_msg_details += "Graph may be stuck. Pending tokens exist.\n"
+            elif not self.executor.completed:
+                stuck_msg_status += "No executable nodes."
+                log_msg_details += "Graph may be stuck. No executable nodes and not completed.\n"
+            
+            self.status_label.config(text=stuck_msg_status)
+            self.log_text_area.insert(tk.END, log_msg_details) # Changed from log_msg to log_msg_details for clarity
+            self.log_text_area.see(tk.END)
+            self.log_text_area.config(state='disabled')
 
 
     def update_plot(self):
         self.ax.clear()
-        
         if not self.G.nodes():
-            self.ax.text(0.5, 0.5, 'Graph is empty or not loaded.', 
-                        ha='center', va='center', transform=self.ax.transAxes, fontsize=16, color='red')
+            self.ax.text(0.5, 0.5, 'Graph is empty.', ha='center', va='center', transform=self.ax.transAxes)
             self.canvas.draw()
             return
-        
-        # Ensure layout is computed if not already, or if G changed (e.g. on error)
+
         if not self.layout or set(self.layout.keys()) != set(self.G.nodes()):
-            print("Recomputing layout as graph nodes changed or layout was empty.")
-            # Assuming args.layout is not directly accessible, use a default or re-evaluate
-            # For simplicity, let's try to use the 'dot' layout as a common good one.
             self.layout = create_enhanced_layout(self.G, 'dot') 
-            if not self.layout and self.G.nodes(): # If still no layout, try spring
-                self.layout = create_enhanced_layout(self.G, 'spring')
-
-
-        # If layout is still empty after trying, inform user and exit plotting.
+            if not self.layout and self.G.nodes(): self.layout = create_enhanced_layout(self.G, 'spring')
         if not self.layout and self.G.nodes():
-            self.ax.text(0.5, 0.5, 'Layout computation failed. Cannot draw graph.',
-                         ha='center', va='center', transform=self.ax.transAxes, fontsize=14, color='red')
-            self.canvas.draw()
-            return
+            self.ax.text(0.5, 0.5, 'Layout failed.', ha='center', va='center', transform=self.ax.transAxes)
+            self.canvas.draw(); return
 
-        # Node colors and sizes
-        executed_nodes_in_seq = [step['nodes'] for step in self.executor.execution_sequence]
-        node_colors = []
-        node_sizes = []
-        
-        # Determine active edges from the LAST step
-        active_edges = []
-        last_executed_source_node = None
+        last_step_executed_node_ids = []
         if self.executor.execution_sequence:
-            last_step = self.executor.execution_sequence[-1]
-            # A token must have been produced and the simulation not yet completed for edge to be "active" for propagation
-            any_returns = False
-            for node in last_step['nodes']:
-                if (self.executor.G.nodes[node].get('op') == 'Return'):
-                    any_returns = True
-                    break
-            if last_step['results'] is not None and not any_returns:
-                for node in last_step['nodes']:
-                    last_executed_source_node = node # The nodes that just fired and produced output
-                    for successor in self.executor.G.successors(last_executed_source_node):
-                        active_edges.append((last_executed_source_node, successor))
+            last_step_details = self.executor.execution_sequence[-1]['execution_details']
+            last_step_executed_node_ids = [d['node_id'] for d in last_step_details]
+
+        all_executed_node_ids_ever = set()
+        for step_log in self.executor.execution_sequence:
+            for detail in step_log['execution_details']:
+                all_executed_node_ids_ever.add(detail['node_id'])
         
-        for n in self.G.nodes(): # Iterate through original graph G for consistent node display
+        node_colors, node_sizes = [], []
+        active_edges = []
+
+        if self.executor.execution_sequence: 
+            last_step_details = self.executor.execution_sequence[-1]['execution_details']
+            is_return_step = any(self.executor.G.nodes[detail['node_id']].get('op') == 'Return' 
+                                 for detail in last_step_details)
+
+            if not is_return_step and not self.executor.completed:
+                for detail in last_step_details:
+                    if detail['result_token']: 
+                        source_node = detail['node_id']
+                        for successor in self.executor.G.successors(source_node):
+                            active_edges.append((source_node, successor))
+        
+        for n in self.G.nodes():
             op_type = self.G.nodes[n].get('op', 'Unknown')
-            
-            if (self.executor.execution_sequence) and (n in (self.executor.execution_sequence[-1])['nodes']): # Nodes that just executed
-                node_colors.append('orange')
+            if n in last_step_executed_node_ids:
+                node_colors.append('orange'); node_sizes.append(800)
+            elif n in all_executed_node_ids_ever:
+                node_colors.append('lightgreen' if not (op_type == 'Return' and self.executor.completed) else 'gold')
                 node_sizes.append(800)
-            elif n in executed_nodes_in_seq: # Executed in a previous step
-                if op_type == 'Return' and self.executor.completed and self.executor.return_value is not None:
-                    node_colors.append('gold')
-                else:
-                    node_colors.append('lightgreen')
-                node_sizes.append(800)
-            else: # Not yet executed
+            else:
                 if op_type == 'Stream': node_colors.append('salmon')
                 elif op_type == 'FunctionInput': node_colors.append('lightblue')
                 elif op_type == 'Constant': node_colors.append('lightsteelblue')
@@ -661,46 +603,28 @@ class DataflowSimulator:
                 else: node_colors.append('lightgray')
                 node_sizes.append(700)
 
-        # Draw edges
         all_edges = list(self.G.edges())
         inactive_edges = [e for e in all_edges if e not in active_edges]
-
-        nx.draw_networkx_edges(self.G, self.layout, ax=self.ax, edgelist=inactive_edges,
-                               arrowstyle='->', node_size=node_sizes, arrowsize=10,
-                               edge_color='black', width=1.5, alpha=0.8,
-                               connectionstyle='arc3,rad=0.1')
+        nx.draw_networkx_edges(self.G, self.layout, ax=self.ax, edgelist=inactive_edges, arrowstyle='->', node_size=node_sizes, arrowsize=10, edge_color='black', width=1.5, alpha=0.8, connectionstyle='arc3,rad=0.1')
         if active_edges:
-            nx.draw_networkx_edges(self.G, self.layout, ax=self.ax, edgelist=active_edges,
-                                   arrowstyle='->', node_size=node_sizes, arrowsize=10,
-                                   edge_color='red', width=1.5, alpha=1.0, # Highlight active edge
-                                   connectionstyle='arc3,rad=0.1')
+            nx.draw_networkx_edges(self.G, self.layout, ax=self.ax, edgelist=active_edges, arrowstyle='->', node_size=node_sizes, arrowsize=10, edge_color='red', width=1.5, alpha=1.0, connectionstyle='arc3,rad=0.1')
         
-        # Draw nodes
-        nx.draw_networkx_nodes(self.G, self.layout, node_color=node_colors, node_size=node_sizes,
-                               ax=self.ax, edgecolors='black')
+        nx.draw_networkx_nodes(self.G, self.layout, node_color=node_colors, node_size=node_sizes, ax=self.ax, edgecolors='black')
         
-        # Labels
         labels = {}
         for n in self.G.nodes():
-            node_data_g = self.G.nodes[n] # From original graph for base info
+            node_data_g = self.G.nodes[n]
             op_type = node_data_g.get('op', 'Unknown')
             param_name = node_data_g.get('param_name', '').strip('"')
-            
-            # Get current value from executor's node_values (output of the node)
-            # For FunctionInput/Constant, this value is set when they "execute"
             current_value_str = ""
             if n in self.executor.node_values:
                  val = self.executor.node_values[n]
-                 # Format output value for display
                  if isinstance(val, float): current_value_str = f"{val:.2f}"
                  elif isinstance(val, bool): current_value_str = str(val)
-                 else: current_value_str = str(val) # Includes int and string
+                 else: current_value_str = str(val)
                  current_value_str = f"\n= {current_value_str}"
-            elif op_type == 'FunctionInput': # Show initial value if not executed yet
-                 current_value_str = f"\n({node_data_g.get('arg_value',0)})"
-            elif op_type == 'Constant': # Show initial value if not executed yet
-                 current_value_str = f"\n({node_data_g.get('value',0)})"
-
+            elif op_type == 'FunctionInput': current_value_str = f"\n({node_data_g.get('arg_value',0)})"
+            elif op_type == 'Constant': current_value_str = f"\n({node_data_g.get('value',0)})"
 
             base_label = ""
             if op_type == 'FunctionInput': base_label = param_name if param_name else f'In_{n}'
@@ -708,70 +632,56 @@ class DataflowSimulator:
             elif op_type == 'Stream': base_label = "STR"
             elif op_type == 'Return': base_label = "ret"
             elif op_type == 'BasicBinaryOp': base_label = node_data_g.get('op_symbol', '?')
-            elif op_type == 'TS': base_label = "T S" # True Select
-            elif op_type == 'FS': base_label = "F S" # False Select
+            elif op_type == 'TS': base_label = "T S" 
+            elif op_type == 'FS': base_label = "F S" 
             elif op_type == 'Load': base_label = "ld"
             elif op_type == 'Store': base_label = "st"
             elif op_type == 'Merge': base_label = "M"
             else: base_label = op_type
-            
             labels[n] = f"{base_label}{current_value_str}"
         
-        nx.draw_networkx_labels(self.G, self.layout, labels, font_size=8, ax=self.ax, 
-                                font_weight='normal', verticalalignment='center') # Adjusted font
+        nx.draw_networkx_labels(self.G, self.layout, labels, font_size=8, ax=self.ax, font_weight='normal', verticalalignment='center')
         
-        # Title and Memory Display
-        title_text = "Token Dataflow Simulation"
-        if self.current_step == 0:
-            title_text = "Ready to Start. Click 'Next Step'."
-        elif self.executor.completed:
-            title_text = f"Simulation Complete! Return Value: {self.executor.return_value}"
-        elif self.executor.execution_sequence:
-            last_step = self.executor.execution_sequence[-1]
-            title_text = f"Step {self.current_step}: Nodes: '{last_step['nodes']}' -> {last_step['results']}"
+        #title_text = "Token Dataflow Simulation"
+        #if self.current_step == 0: title_text = "Ready to Start. Click 'Next Step'."
+        #elif self.executor.completed: 
+        #    ret_val_str = f"{self.executor.return_value:.2f}" if isinstance(self.executor.return_value, float) else str(self.executor.return_value)
+        #    title_text = f"Simulation Complete! Return Value: {ret_val_str}"
+        #elif self.executor.execution_sequence:
+        #    last_exec_details = self.executor.execution_sequence[-1]['execution_details']
+        #    nodes_str = [d['node_id'] for d in last_exec_details]
+        #    results_str = [f"{d['result_token'].value:.2f}" if isinstance(d['result_token'].value, float) else str(d['result_token'].value) 
+        #                   for d in last_exec_details if d['result_token'] is not None]
+        #    title_text = f"Step {self.current_step}: Nodes: {nodes_str} -> {results_str}"
         
-        self.ax.set_title(title_text, fontsize=13, fontweight='bold', pad=15)
-        
+        #self.ax.set_title(title_text, fontsize=13, fontweight='bold', pad=15)
         memory_str = ", ".join([f"{k}:{v}" for k,v in sorted(memory.items())]) if memory else "{}"
-        self.ax.text(0.01, 0.98, f"Memory: {memory_str}", transform=self.ax.transAxes, 
-                    fontsize=9, verticalalignment='top',
-                    bbox=dict(boxstyle="round,pad=0.3", facecolor="khaki", alpha=0.7))
+        self.ax.text(0.01, 0.98, f"Memory: {memory_str}", transform=self.ax.transAxes, fontsize=9, verticalalignment='top', bbox=dict(boxstyle="round,pad=0.3", facecolor="khaki", alpha=0.7))
         
         self.ax.axis('off')
         self.canvas.draw_idle()
 
-
 def main():
     parser = argparse.ArgumentParser(description="Token-Based Dataflow Graph Simulator")
-    parser.add_argument('--layout', choices=['hierarchical', 'spring', 'shell', 'spectral', 'kamada_kawai', 'dot', 'neato'], 
-                        default='dot', help="Layout algorithm for the graph (default: dot)")
-    parser.add_argument('--dot', default='dfg.dot', help="Path to the .dot file describing the dataflow graph")
-    parser.add_argument('--inputs', type=str, help='JSON string of initial input values for FunctionInput nodes (e.g., \'{"node_id1": 10, "node_id2": "hello"}\')')
+    parser.add_argument('--layout', choices=['hierarchical', 'spring', 'shell', 'spectral', 'kamada_kawai', 'dot', 'neato'], default='dot', help="Layout algorithm for the graph")
+    parser.add_argument('--dot', default='dfg.dot', help="Path to the .dot file")
+    parser.add_argument('--inputs', type=str, help='JSON string of initial input values (e.g., \'{"node_id1": 10}\')') # Added from previous context
     args = parser.parse_args()
 
     G = read_graph(args.dot)
-    
-    # Apply input arguments from command line if provided
-    if args.inputs:
+    if args.inputs: # Added from previous context
         try:
             cmd_input_values = json.loads(args.inputs)
             for node_id, value in cmd_input_values.items():
                 if node_id in G.nodes and G.nodes[node_id].get('op') == 'FunctionInput':
                     G.nodes[node_id]['arg_value'] = value
-                    print(f"CLI Input: Set {node_id} to {value}")
-        except json.JSONDecodeError:
-            print(f"Error: Invalid JSON format for --inputs argument: {args.inputs}")
-        except Exception as e:
-            print(f"Error processing --inputs: {e}")
+        except json.JSONDecodeError: print(f"Error: Invalid JSON for --inputs: {args.inputs}")
+        except Exception as e: print(f"Error processing --inputs: {e}")
 
-    # Compute layout once initially
-    # If G is empty (e.g. read_graph failed and default example also failed), layout will be {}
+
     layout = {}
-    if G.nodes(): 
-        layout = create_enhanced_layout(G, args.layout)
-    else:
-        print("Warning: Graph is empty. The visualizer might not display anything.")
-
+    if G.nodes(): layout = create_enhanced_layout(G, args.layout)
+    else: print("Warning: Graph is empty.")
 
     root = tk.Tk()
     app = DataflowSimulator(root, G, layout)
