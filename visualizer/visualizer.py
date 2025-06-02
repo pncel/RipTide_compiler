@@ -5,7 +5,7 @@ from matplotlib.animation import FuncAnimation
 import json
 import tkinter as tk
 from tkinter import messagebox, ttk
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import matplotlib
 matplotlib.use('TkAgg')
 
@@ -189,7 +189,7 @@ class TokenBasedExecutor:
         
         elif op_type == 'Load':
             if arity == 2 and len(consumed_input_values) == 2:
-                addr, offset_val = consumed_input_values[0], consumed_input_values[1] # Corrected order based on typical usage
+                addr, offset_val = consumed_input_values[0], consumed_input_values[1] 
                 consumed_count = 2
                 final_address = addr + offset_val if isinstance(addr, (int,float)) and isinstance(offset_val, (int,float)) else addr # Fallback if not numeric
                 value = memory.get(final_address)
@@ -197,10 +197,7 @@ class TokenBasedExecutor:
         
         elif op_type == 'Store':
             if arity == 3 and len(consumed_input_values) == 3:
-                # Assuming order from .dot: offset, addr, val (adjust if this is wrong for your .dot files)
-                # Or more typically: addr, value, (optional offset or control)
-                # Let's assume inputs are: addr, val, offset for consistency with typical Store ops
-                addr, val_to_store, offset = consumed_input_values[0], consumed_input_values[1], consumed_input_values[2]
+                addr, val_to_store, offset = consumed_input_values[1], consumed_input_values[2], consumed_input_values[0]
                 consumed_count = 3
                 final_address = addr + offset if isinstance(addr, (int,float)) and isinstance(offset, (int,float)) else addr # Fallback
                 memory[final_address] = val_to_store
@@ -362,16 +359,16 @@ class DataflowSimulator:
 
     def create_widgets(self):
         main_frame = tk.Frame(self.root, bg='#f0f0f0')
-        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        main_frame.pack(fill='both', expand=True, padx=1, pady=1)
         
         # Control frame (packed first from the bottom to reserve its space)
         # MODIFIED: Reduced height from 200 to 160
         control_frame = tk.Frame(main_frame, bg='#e0e0e0', relief='raised', bd=2, height=160) 
-        control_frame.pack(side='bottom', fill='x', pady=(10, 0))
+        control_frame.pack(side='bottom', fill='x', pady=(5, 0))
         control_frame.pack_propagate(False) # Prevent child widgets from shrinking it
         
         control_inner = tk.Frame(control_frame, bg='#e0e0e0')
-        control_inner.pack(fill='both', expand=True, padx=10, pady=10)
+        control_inner.pack(fill='both', expand=True, padx=5, pady=5)
         
         input_outer_frame = tk.LabelFrame(control_inner, text="Function Inputs", 
                                   font=("Arial", 11, "bold"), bg='#e0e0e0', fg='#333')
@@ -432,13 +429,21 @@ class DataflowSimulator:
 
 
         # Graph frame (packed from the top, takes all remaining space)
-        graph_frame = tk.Frame(main_frame, bg='white', relief='sunken', bd=2)
+        graph_frame = tk.Frame(main_frame, bg='white', relief='sunken', bd=0)
         graph_frame.pack(side='top', fill='both', expand=True)
         
         self.fig, self.ax = plt.subplots(figsize=(14, 7)) 
         self.fig.patch.set_facecolor('white')
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
-        self.canvas.get_tk_widget().pack(fill='both', expand=True, padx=5, pady=5)
+
+        # Add a toolbar for navigation (pan, zoom)
+        self.toolbar = NavigationToolbar2Tk(self.canvas, graph_frame) # Master is 'self' (the main Tkinter window)
+        self.toolbar.update()
+        # Pack the toolbar first, at the top
+        self.toolbar.pack(side=tk.TOP, fill=tk.X, padx=5, pady=2) # Pack toolbar within graph_frame first
+ 
+        # Then pack the canvas widget, allowing it to expand
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5) # Canvas expands within graph_frame
 
 
     def on_input_change(self, node_id):
