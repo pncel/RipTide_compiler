@@ -450,46 +450,47 @@ public:
     }
 
     // ==== PASS 1.3: handle all branches up‐front ====
-    for (auto &BB : F) {
-      for (auto &I : BB) {
-        if (auto *BI = dyn_cast<BranchInst>(&I)) {
-          if (BI->isConditional()) {
-            // setup steer nodes and wire condition
-            auto [tS,fS] = createSteers(customGraph,
-                                        BI->getCondition(),
-                                        /*no data value*/ nullptr,
-                                        /*no data value*/ nullptr);
-            BranchSteers[BI] = {tS,fS};
+      for (auto &BB : F) {
+        for (auto &I : BB) {
+          if (auto *BI = dyn_cast<BranchInst>(&I)) {
+            if (BI->isConditional()) {
+              // setup steer nodes and wire condition
+              auto [tS,fS] = createSteers(customGraph,
+                                         BI->getCondition(),
+                                          nullptr,
+                                          nullptr);
+              BranchSteers[BI] = {tS,fS};
+              
 
-            // Hook the entry stream into each branch-steer
-            DataflowNode *entryStr = getOrCreateFuncEntryStream(customGraph, F);
-            customGraph.addEdge(entryStr, tS);
-            customGraph.addEdge(entryStr, fS);
-
-            // Wire each steer into the first “real” instruction of its successor,
-            // skipping PHI, GEP, ZExt and SExt which we treat as transparent.
-            auto skipPassThroughs = [](BasicBlock *BB) -> Instruction* {
-              for (auto &I : *BB) {
-                //if (isa<PHINode>(I))          continue;
-                if (isa<GetElementPtrInst>(I)) continue;
-                if (isa<CastInst>(I))         continue;
-                return &I;
+              // Hook the entry stream into each branch-steer
+              DataflowNode *entryStr = getOrCreateFuncEntryStream(customGraph, F);
+              customGraph.addEdge(entryStr, tS);
+              customGraph.addEdge(entryStr, fS);
+              
+              // Wire each steer into the first “real” instruction of its successor,
+              // skipping PHI, GEP, ZExt and SExt which we treat as transparent.
+              auto skipPassThroughs = [](BasicBlock *BB) -> Instruction* {
+                for (auto &I : *BB) {
+                  if (isa<PHINode>(I))          continue;
+                  if (isa<GetElementPtrInst>(I)) continue;
+                  if (isa<CastInst>(I))         continue;
+                  return &I;
+                }
+                return nullptr;
+              };
+              if (auto *succ = BI->getSuccessor(0)) {
+                if (auto *realI = skipPassThroughs(succ))
+                  customGraph.addEdge(tS, customGraph.getOrAdd(realI));
               }
-              return nullptr;
-            };
-            if (auto *succ = BI->getSuccessor(0)) {
-              if (auto *realI = skipPassThroughs(succ))
-                customGraph.addEdge(tS, customGraph.getOrAdd(realI));
-            }
-            if (auto *succ = BI->getSuccessor(1)) {
-              if (auto *realI = skipPassThroughs(succ))
-                customGraph.addEdge(fS, customGraph.getOrAdd(realI));
-            }
-          } 
+              if (auto *succ = BI->getSuccessor(1)) {
+                if (auto *realI = skipPassThroughs(succ))
+                  customGraph.addEdge(fS, customGraph.getOrAdd(realI));
+              }
+            } 
+          }
         }
       }
-    }
-
+    
     // Add nodes for function arguments
     for (auto& Arg : F.args()) {
       DataflowNode* argNode = customGraph.getOrAdd(&Arg);
