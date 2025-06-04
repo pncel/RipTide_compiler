@@ -128,22 +128,27 @@ struct CustomDataflowGraph {
 
     // Modified getOrAdd to set basic types for Arguments and Constants
     DataflowNode* getOrAdd(Value *V) {
-      // never materialize conditional branches as nodes
-      if (auto *BI = dyn_cast<BranchInst>(V))
-        if (BI->isConditional())
-          return nullptr;
-      // never materialize ANY cast instruction as its own node
-      if (isa<GetElementPtrInst>(V) || isa<CastInst>(V))        
-        return nullptr;
       if (!V) return nullptr; // Handle null values gracefully
+
+      // Never materialize ANY branch instruction as its own node
+      if (isa<BranchInst>(V)) {
+        return nullptr;
+      }
+      // Never materialize GEP or ANY cast instruction as its own node
+      if (isa<GetElementPtrInst>(V) || isa<CastInst>(V)) {
+        return nullptr;
+      }
+
       if (auto *N = findNodeForValue(V)) return N;
 
       // Determine initial type based on Value type
       DataflowOperatorType type = DataflowOperatorType::Unknown;
       if (isa<Argument>(V)) type = DataflowOperatorType::FunctionInput;
       else if (isa<Constant>(V)) type = DataflowOperatorType::Constant;
+      // For actual instructions, the type will be refined in the main pass.
       return addNode(type, V); // Initial label can be empty and generated later
     }
+
 
     // Add a node to the graph
     DataflowNode* addNode(DataflowOperatorType type, const Value* originalValue = nullptr, const std::string& label = "") {
@@ -684,18 +689,6 @@ public:
                     // This shouldn't happen if Pass 1 is correct, but as a safeguard:
                     mergeNode = customGraph.addNode(DataflowOperatorType::Merge, PN, "M");
                 }
-
-              // —— new: wire in unconditional branches directly to the merge ——
-              for (unsigned i = 0, e = PN->getNumIncomingValues(); i < e; ++i) {
-                BasicBlock *inBB  = PN->getIncomingBlock(i);
-                if (auto *term = dyn_cast<BranchInst>(inBB->getTerminator())) {
-                  // if it's an *un*conditional branch, hook the branch node straight in
-                  if (!term->isConditional()) {
-                    if (auto *brNode = customGraph.findNodeForValue(term))
-                      customGraph.addEdge(brNode, mergeNode);
-                  }
-                }
-              }
                 
                 // Connect incoming values to the Merge node
                 for (unsigned i = 0, e = PN->getNumIncomingValues(); i < e; ++i) {

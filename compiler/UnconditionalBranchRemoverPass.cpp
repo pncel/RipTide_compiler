@@ -93,7 +93,7 @@ struct UnconditionalBranchRemoverPass : PassInfoMixin<UnconditionalBranchRemover
 
                         // 2. Splice all of TargetBB's instructions (including its terminator)
                         //    into the end of BB. BB now inherits TargetBB's instructions and terminator.
-                        BB->getInstList().splice(BB->end(), TargetBB->getInstList());
+                        BB->splice(BB->end(), TargetBB);
 
                         // 3. Update all uses of TargetBB to now refer to BB.
                         //    This is crucial for PHI nodes in successors of the original TargetBB,
