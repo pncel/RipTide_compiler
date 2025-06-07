@@ -131,7 +131,7 @@ struct CustomDataflowGraph {
       if (!V) return nullptr; // Handle null values gracefully
 
       // Never materialize ANY branch instruction as its own node
-      if (isa<BranchInst>(V)) {
+      if (isa<BranchInst>(V) || isa<SelectInst>(V)) {
         return nullptr;
       }
       // Never materialize GEP or ANY cast instruction as its own node
@@ -450,46 +450,46 @@ public:
     }
 
     // ==== PASS 1.3: handle all branches up‐front ====
-      for (auto &BB : F) {
-        for (auto &I : BB) {
-          if (auto *BI = dyn_cast<BranchInst>(&I)) {
-            if (BI->isConditional()) {
-              // setup steer nodes and wire condition
-              auto [tS,fS] = createSteers(customGraph,
-                                         BI->getCondition(),
-                                          nullptr,
-                                          nullptr);
-              BranchSteers[BI] = {tS,fS};
+    for (auto &BB : F) {
+      for (auto &I : BB) {
+        if (auto *BI = dyn_cast<BranchInst>(&I)) {
+          if (BI->isConditional()) {
+            // setup steer nodes and wire condition
+            auto [tS,fS] = createSteers(customGraph,
+                                        BI->getCondition(),
+                                        nullptr,
+                                        nullptr);
+            BranchSteers[BI] = {tS,fS};
               
 
-              // Hook the entry stream into each branch-steer
-              DataflowNode *entryStr = getOrCreateFuncEntryStream(customGraph, F);
-              customGraph.addEdge(entryStr, tS);
-              customGraph.addEdge(entryStr, fS);
+            // Hook the entry stream into each branch-steer
+            DataflowNode *entryStr = getOrCreateFuncEntryStream(customGraph, F);
+            customGraph.addEdge(entryStr, tS);
+            customGraph.addEdge(entryStr, fS);
               
-              // Wire each steer into the first “real” instruction of its successor,
-              // skipping PHI, GEP, ZExt and SExt which we treat as transparent.
-              auto skipPassThroughs = [](BasicBlock *BB) -> Instruction* {
-                for (auto &I : *BB) {
-                  if (isa<PHINode>(I))          continue;
-                  if (isa<GetElementPtrInst>(I)) continue;
-                  if (isa<CastInst>(I))         continue;
-                  return &I;
-                }
-                return nullptr;
-              };
-              if (auto *succ = BI->getSuccessor(0)) {
-                if (auto *realI = skipPassThroughs(succ))
-                  customGraph.addEdge(tS, customGraph.getOrAdd(realI));
+            // Wire each steer into the first “real” instruction of its successor,
+            // skipping PHI, GEP, ZExt and SExt which we treat as transparent.
+            auto skipPassThroughs = [](BasicBlock *BB) -> Instruction* {
+              for (auto &I : *BB) {
+                if (isa<PHINode>(I))          continue;
+                if (isa<GetElementPtrInst>(I)) continue;
+                if (isa<CastInst>(I))         continue;
+                return &I;
               }
-              if (auto *succ = BI->getSuccessor(1)) {
-                if (auto *realI = skipPassThroughs(succ))
-                  customGraph.addEdge(fS, customGraph.getOrAdd(realI));
-              }
-            } 
-          }
+              return nullptr;
+            };
+            if (auto *succ = BI->getSuccessor(0)) {
+              if (auto *realI = skipPassThroughs(succ))
+                customGraph.addEdge(tS, customGraph.getOrAdd(realI));
+            }
+            if (auto *succ = BI->getSuccessor(1)) {
+              if (auto *realI = skipPassThroughs(succ))
+                customGraph.addEdge(fS, customGraph.getOrAdd(realI));
+            }
+          } 
         }
       }
+    }
     
     // Add nodes for function arguments
     for (auto& Arg : F.args()) {
@@ -549,7 +549,7 @@ public:
       // Pass 2: Add edges based on data dependencies and handle special instructions
       for (auto &BB : F) {
         for (auto &I : BB) {
-          // --- new: wire Load pointer into the Load node ---
+          // wire Load pointer into the Load node ---
           if (auto *LI = dyn_cast<LoadInst>(&I)) {
             if (auto *loadNode = customGraph.findNodeForValue(&I)) {
               // wire the address operand (so GEP→ZExt→%m path reaches the load)
@@ -557,7 +557,7 @@ public:
             }
             
           }
-          // --- new: wire Store operands into the Store node ---
+          // wire Store operands into the Store node ---
           if (auto *SI = dyn_cast<StoreInst>(&I)) {
             if (auto *storeNode = customGraph.findNodeForValue(&I)) {
               // wire the *value* being stored (this is where '%m' travels)
@@ -650,32 +650,6 @@ public:
               // For a single-function DFG, this is less relevant.
             }
           }
-          if (auto *SI = dyn_cast<SelectInst>(&I)) {
-            // Convert select nodes to T/F steers and route their inputs/outputs
-            auto [tS, fS] = createSteers(customGraph,
-                                      SI->getCondition(),
-                                      SI->getTrueValue(),
-                                      SI->getFalseValue());
-
-          // The output of the select is now represented by the outputs of the steers.
-          // Re-wire users of the select instruction to use the steer nodes' outputs.
-          DataflowNode* selectNode = customGraph.findNodeForValue(SI);
-          if (selectNode) {
-              // Remove existing edges from the original select node if any were added
-              // This might be tricky with the current wireValueToNode logic preventing duplicates.
-              // A better approach might be to not add edges *from* the select instruction
-              // in the main dependency loop if we know we'll replace it with steers.
-              // For simplicity now, users of the SelectInst will be connected to the steers.
-            for (auto *U : SI->users()) {
-              if (auto *userInst = dyn_cast<Instruction>(U)) {
-                if (auto *dest = customGraph.findNodeForValue(userInst)) {
-                  customGraph.addEdge(tS, dest); // Output of TrueSteer goes to user
-                  customGraph.addEdge(fS, dest); // Output of FalseSteer goes to user
-                }
-              }
-            }
-          }
-        }
         }
       }
 
