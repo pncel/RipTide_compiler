@@ -5,6 +5,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/Support/FileSystem.h" // For sys::fs::OF_Text, raw_fd_ostream
 #include <system_error> // For std::error_code
+#include "llvm/IR/Function.h" // Added for llvm::Function
 
 using namespace llvm;
 using namespace llvm::sys;
@@ -52,6 +53,10 @@ void CustomDataflowGraph::wireValueToNode(llvm::Value *V, DataflowNode *destN) {
 DataflowNode* CustomDataflowGraph::getOrAdd(llvm::Value *V) {
     if (!V) return nullptr; // Handle null values gracefully
 
+    // NEVER materialize a Function as its own node.
+    if (isa<Function>(V)) { // Added check for Function
+        return nullptr;
+    }
     // Never materialize ANY branch instruction as its own node
     if (isa<BranchInst>(V) || isa<SelectInst>(V)) {
         return nullptr;

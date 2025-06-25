@@ -40,10 +40,9 @@ struct EnforceMemOrderPass : PassInfoMixin<EnforceMemOrderPass> {
         // The value '1' (or true) will signify an active token.
         Type *ActualTokenDataType = Type::getInt1Ty(Context); // Using i1 for the token value (true/false)
 
-        // `lso.entry.token` is a nullary function that provides the initial token.
-        // It now returns an i1 (constant true).
-        FunctionType *LsoEntryTokenType = FunctionType::get(ActualTokenDataType, {}, false);
-        FunctionCallee LsoEntryToken = M->getOrInsertFunction("lso.entry.token", LsoEntryTokenType);
+        // `lso.entry.token` is no longer needed as stores don't consume an entry token.
+        // FunctionType *LsoEntryTokenType = FunctionType::get(ActualTokenDataType, {}, false);
+        // FunctionCallee LsoEntryToken = M->getOrInsertFunction("lso.entry.token", LsoEntryTokenType);
 
         // Maps to store type-specific intrinsics
         std::map<Type *, FunctionCallee> LsoLoadIntrinsics;
@@ -70,7 +69,8 @@ struct EnforceMemOrderPass : PassInfoMixin<EnforceMemOrderPass> {
         };
 
         // Helper to get or insert a type-specific lso.store intrinsic.
-        // `lso.store.TY` takes a pointer, a value, and a token, and returns a new token ('1').
+        // `lso.store.TY` takes a pointer and a value, and returns a new token ('1').
+        // It *does not* take an incoming token as it's not dependent on one.
         auto getOrCreateLsoStore = [&](Type *ValType, Type *PtrType) {
             if (LsoStoreIntrinsics.count(ValType))
                 return LsoStoreIntrinsics[ValType];
@@ -81,8 +81,8 @@ struct EnforceMemOrderPass : PassInfoMixin<EnforceMemOrderPass> {
             ValType->print(RSO);
 
             // `lso.store.TY` returns an i1 token (constant true).
-            // It takes ptr, value, and the current token to ensure ordering.
-            FunctionType *LsoStoreType = FunctionType::get(ActualTokenDataType, {PtrType, ValType, ActualTokenDataType}, false);
+            // It takes ptr and value. It does NOT take an incoming token.
+            FunctionType *LsoStoreType = FunctionType::get(ActualTokenDataType, {PtrType, ValType}, false);
             FunctionCallee LsoStore = M->getOrInsertFunction((Twine("lso.store.") + RSO.str()).str(), LsoStoreType);
             LsoStoreIntrinsics[ValType] = LsoStore;
             return LsoStore;
@@ -128,9 +128,9 @@ struct EnforceMemOrderPass : PassInfoMixin<EnforceMemOrderPass> {
             // Determine the starting token for this block.
             if (BB->isEntryBlock()) {
                 IRBuilder<> EntryBuilder(&BB->front());
-                // Initial token is a constant 'true' (1) of ActualTokenDataType.
-                // This token allows initial loads to fire.
-                CurrentToken = EntryBuilder.CreateCall(LsoEntryToken, {}, "lso.entry");
+                // For the entry block, the initial token is a constant 'true' (1) of ActualTokenDataType.
+                // This allows the very first load in the program to fire.
+                CurrentToken = ConstantInt::get(ActualTokenDataType, 1);
             } else {
                 // For non-entry blocks, the token comes from the PHI node,
                 // which merges tokens from all predecessors.
@@ -178,10 +178,10 @@ struct EnforceMemOrderPass : PassInfoMixin<EnforceMemOrderPass> {
                     Type *PointerType = SI->getPointerOperand()->getType();
                     FunctionCallee LsoStore = getOrCreateLsoStore(StoredValueType, PointerType);
 
-                    // Call the lso.store intrinsic. It takes the pointer, value, and CurrentToken.
+                    // Call the lso.store intrinsic. It takes the pointer and value.
                     // It returns a new token (constant 'true'), which becomes the
                     // LastTokenProducedInBlock and also the CurrentToken for the next instruction.
-                    Value *NewToken = Builder.CreateCall(LsoStore, {SI->getPointerOperand(), SI->getValueOperand(), CurrentToken});
+                    Value *NewToken = Builder.CreateCall(LsoStore, {SI->getPointerOperand(), SI->getValueOperand()});
                     
                     // Update CurrentToken for the *next* instruction in this block.
                     CurrentToken = NewToken; 

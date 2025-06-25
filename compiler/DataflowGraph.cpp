@@ -88,8 +88,8 @@ public:
     for (auto& BB : F) {
         for (auto& I : BB) {
           std::string sym;
-          ICmpInst *CI = nullptr;
-          FCmpInst *FI = nullptr;
+          ICmpInst *CI_icmp = nullptr; // Use a distinct variable name for ICmpInst
+          FCmpInst *FI_fcmp = nullptr; // Use a distinct variable name for FCmpInst
           if (isa<SelectInst>(&I) || isa<GetElementPtrInst>(&I)
             || (isa<BranchInst>(&I) && cast<BranchInst>(&I)->isConditional()) ||
             isa<CastInst>(&I) )
@@ -110,34 +110,37 @@ public:
               // Add more binary operations as needed
               default:                    sym = Instruction::getOpcodeName(I.getOpcode());
             }
-          } else if (isa<LoadInst>(&I)) {
-             opType = DataflowOperatorType::Load;
-             label = "ld";
-          } else if (isa<StoreInst>(&I)) {
-              opType = DataflowOperatorType::Store;
-              label = "st";
-          } else if (CI = dyn_cast<ICmpInst>(&I)) {
+          } else if (CallInst *CallI = dyn_cast<CallInst>(&I)) { // MODIFIED: Use a distinct variable name for CallInst
+              if (CallI->getCalledFunction()) {
+                  if (CallI->getCalledFunction()->getName().contains("lso.load")) {
+                      opType = DataflowOperatorType::Load;
+                      label = "ld";
+                  } else if (CallI->getCalledFunction()->getName().contains("lso.store")) {
+                      opType = DataflowOperatorType::Store;
+                      label = "st";
+                  } else {
+                      label = "call"; // Generic label for other calls
+                  }
+              }
+          } else if (CI_icmp = dyn_cast<ICmpInst>(&I)) { // Use CI_icmp for ICmpInst
               // Comparisons will be linked to Steer nodes, create a node for the comparison result
               label = Instruction::getOpcodeName(I.getOpcode());
               opType = DataflowOperatorType::BasicBinaryOp;
-              switch (CI->getPredicate()) {
+              switch (CI_icmp->getPredicate()) { // Use CI_icmp here
                 case ICmpInst::ICMP_EQ:  sym = "=="; break;
                 case ICmpInst::ICMP_NE:  sym = "!="; break;
                 case ICmpInst::ICMP_SLT: sym = "<";  break;
                 case ICmpInst::ICMP_SLE: sym = "<="; break;
                 case ICmpInst::ICMP_SGT: sym = ">";  break;
                 case ICmpInst::ICMP_SGE: sym = ">="; break;
-                default:                 sym = CmpInst::getPredicateName(CI->getPredicate()).str();
+                default:                 sym = CmpInst::getPredicateName(CI_icmp->getPredicate()).str();
               }
-          } else if (FI = dyn_cast<FCmpInst>(&I)) {
+          } else if (FI_fcmp = dyn_cast<FCmpInst>(&I)) { // Use FI_fcmp for FCmpInst
               opType = DataflowOperatorType::BasicBinaryOp;
-              sym = CmpInst::getPredicateName(FI->getPredicate()).str();
+              sym = CmpInst::getPredicateName(FI_fcmp->getPredicate()).str();
           } else if (isa<PHINode>(&I)) {
               opType = DataflowOperatorType::Merge;
               label = "M"; // Based on image
-          } else if (isa<CallInst>(&I)) {
-              // Handle function calls - could be basic ops or more complex
-              label = "call"; // Generic label for now
           } else if (isa<ReturnInst>(&I)) {
               label = "ret"; // Still include return for graph termination visualization
           } 
@@ -249,7 +252,31 @@ public:
     // Pass 2: Add edges based on data dependencies and handle special instructions
     for (auto &BB : F) {
       for (auto &I : BB) {
-          // wire Load pointer into the Load node
+          // MODIFIED: Handle custom load/store calls
+          if (auto *CI = dyn_cast<CallInst>(&I)) {
+              if (CI->getCalledFunction()) {
+                  if (CI->getCalledFunction()->getName().contains("lso.load")) {
+                      if (auto *loadNode = customGraph.findNodeForValue(&I)) {
+                          // wire the address operand (first operand)
+                          customGraph.wireValueToNode(CI->getArgOperand(0), loadNode);
+                          // wire the token operand (second operand)
+                          customGraph.wireValueToNode(CI->getArgOperand(1), loadNode);
+                      }
+                  } else if (CI->getCalledFunction()->getName().contains("lso.store")) {
+                      if (auto *storeNode = customGraph.findNodeForValue(&I)) {
+                          // wire the pointer operand (first operand)
+                          customGraph.wireValueToNode(CI->getArgOperand(0), storeNode);
+                          // wire the value operand (second operand)
+                          customGraph.wireValueToNode(CI->getArgOperand(1), storeNode);
+                          // The lso.store intrinsic no longer takes a third (token) operand.
+                          // The token is now a return value from the store.
+                          // customGraph.wireValueToNode(CI->getArgOperand(2), storeNode); // REMOVED: This line was causing the error
+                      }
+                      continue; // Skip generic wiring below for custom stores
+                  }
+              }
+          }
+          // wire Load pointer into the Load node (original LoadInst handling, kept for other LoadInsts)
           if (auto *LI = dyn_cast<LoadInst>(&I)) {
             if (auto *loadNode = customGraph.findNodeForValue(&I)) {
               // wire the address operand (so GEP→ZExt→%m path reaches the load)
@@ -258,7 +285,7 @@ public:
             // No need to do any further wiring for loads, as outputs are handled by users
             //continue; // Skip generic wiring below for loads
           }
-          // wire Store operands into the Store node
+          // wire Store operands into the Store node (original StoreInst handling, kept for other StoreInsts)
           if (auto *SI = dyn_cast<StoreInst>(&I)) {
             if (auto *storeNode = customGraph.findNodeForValue(&I)) {
               // wire the *value* being stored
@@ -300,10 +327,21 @@ public:
 
           // wire every constant operand into I
           if (DataflowNode *instN = customGraph.findNodeForValue(&I)) {
-            for (auto &op : I.operands()) {
-              if (auto *C = dyn_cast<Constant>(op)) {
-                customGraph.addEdge(customGraph.getOrAdd(C), instN);
-              }
+            // MODIFIED: Handle CallInsts specially to avoid wiring the function declaration
+            if (CallInst *CI = dyn_cast<CallInst>(&I)) {
+                // Iterate only over the actual arguments, skipping the callee (operand 0)
+                for (Value *ArgOperand : CI->operands()) {
+                    if (auto *C = dyn_cast<Constant>(ArgOperand)) {
+                        customGraph.addEdge(customGraph.getOrAdd(C), instN);
+                    }
+                }
+            } else {
+                // For non-CallInst instructions, iterate over all operands as before
+                for (auto &op : I.operands()) {
+                  if (auto *C = dyn_cast<Constant>(op)) {
+                    customGraph.addEdge(customGraph.getOrAdd(C), instN);
+                  }
+                }
             }
           }
           
@@ -391,7 +429,7 @@ public:
               }
             }
          }
-    }
+      }
 
     // Pass 4: Add edges from Function Arguments to their users
     for (auto& Arg : F.args()) {
