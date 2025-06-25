@@ -1,6 +1,8 @@
 /*
 What This Pass Does:
- - Converts load and store instructions to Load Store Ordering (LSO) that pass an activation token with their values
+ - Converts load and store instructions to custom Load Store Ordering (LSO) instructions
+ - The lso.load takes the the usual load input (an address) as well as a token that must be valid before the load can fire
+ - the lso.store takes in the usual store inputs (an address and value) but outputs a token that is then passed to depedendent load instructions
 
 To run on llvm ir:
 clang++ -fPIC -shared -o libEnforce.so compiler/EnforceMemOrderPass.cpp  `llvm-config --cxxflags --ldflags --system-libs`
