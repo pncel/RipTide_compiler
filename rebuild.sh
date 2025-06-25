@@ -21,9 +21,15 @@ echo "Building with Ninja..."
 ninja
 
 echo "Regenerating LLVM IR"
-clang -O2 -S -emit-llvm ../test/test_active.c -o ../test/test_active.ll
+clang -Os -fno-vectorize -S -emit-llvm ../test/test_active.c -o ../test/test_active.ll
 
-echo "Running opt with DataflowGraph pass..."
+#echo "Running Memory ordering enforcement pass.."
+#/usr/local/bin/opt -load-pass-plugin ./libEnforce.so -passes=EnforceMemOrderPass -S ../test/test_active.ll -o ../test/test_active_mem_enforced.ll
+
+#echo "Running DataflowGraph generation pass..."
+#/usr/local/bin/opt -load-pass-plugin ./DataflowGraph.so -passes=DataflowGraph -disable-output ../test/test_active_mem_enforced.ll
+
+echo "Running DataflowGraph generation pass..."
 /usr/local/bin/opt -load-pass-plugin ./DataflowGraph.so -passes=DataflowGraph -disable-output ../test/test_active.ll
 
 echo "Generating DFG image..."

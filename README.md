@@ -18,7 +18,7 @@ __Within WSL2 and the directory: /mnt/c/__
 ```bash
 sudo apt-get update
 sudo apt-get install ninja lld
-git clone  ~~depth 1 https://github.com/llvm/llvm-project.git
+git clone --depth 1 https://github.com/llvm/llvm-project.git
 cd llvm-project
 cmake -S llvm -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug \
@@ -40,7 +40,8 @@ Libraries: /usr/local/lib/
 Headers: /usr/local/include/  
 CMake configs: /usr/local/lib/cmake/llvm/ or similar 
 
-**Run a pass**
+**Run a pass:**
+
 ```bash
 git clone https://github.com/pncel/RipTide_compiler.git
 cd RipTide_compiler
@@ -50,14 +51,16 @@ ninja
 /usr/local/bin/opt -load-pass-plugin ./ControlflowGraph.so -passes=ControlflowGraph -disable-output ../test/test_cfg.ll
 ```
 
-**Bonus:**
+### Bonus:
 
-Generate LLVM IR from C:
+**Generate LLVM IR from C:**
+
 ```bash
 clang -O2 -S -emit-llvm <source.c> -o <output.ll>
 ```
 
-Visualize Data Flow Graph:
+**Visualize Data Flow Graph:**
+
 ```bash
 sudo apt-get install graphviz xdg-utils desktop-file-utils eog
 dot -Tpng dfg.dot -o dfg.png
@@ -86,7 +89,7 @@ int example(int n, int m, int p) {
 }
 ```
 
-LLVM IR Generated:
+**LLVM IR Generated:**
 
 ```llvm
 define dso_local range(i32 -2147483647, -2147483648) i32 @example(i32 noundef %n, i32 noundef %m, i32 noundef %p) local_unnamed_addr #0 {

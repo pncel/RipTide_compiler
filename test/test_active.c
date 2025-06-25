@@ -1,15 +1,11 @@
-int example(int n, int m, int p) {
-  int A = 1;
-  int mm = -5;
+void example(int*A, int n, int m) {
+  A[m] = 1;
 
-  A += m * p;
-  mm *= m;
-  A += n+mm*p;
-
-  if (A >= 0){
-    return A;
-  } else {
-    return (A * -1) + mm;
+  for (int i = 0; i < n; i++){
+    int foo = A[i];
+    if(foo > 42) {
+      A[i] = 0;
+    }
+    A[i] += foo + i;
   }
-  
 }

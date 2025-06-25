@@ -15,6 +15,12 @@ set(CMAKE_CXX_STANDARD 17 CACHE STRING "")
 # Enable LLVM pass plugin system
 include(AddLLVM)
 
-add_llvm_pass_plugin(DataflowGraph
+add_llvm_pass_plugin(
+  EnforceMemOrderPass compiler/EnforceMemOrderPass.cpp
+)
+
+add_llvm_pass_plugin(
+  DataflowGraph 
   compiler/DataflowGraph.cpp
+  compiler/CustomDataflowGraph.cpp # <--- ADD THIS LINE
 )

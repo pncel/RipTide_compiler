@@ -411,7 +411,6 @@ class DataflowSimulator:
         self.status_label = tk.Label(center_frame, text="Step: 0", font=("Arial", 11, "bold"), bg='#e0e0e0', height=2) # Assuming status_label should be here
         self.status_label.pack(pady=(8, 5))
 
-
         # Log display frame (packed next from the bottom, placing it above controls)
         log_display_frame = tk.LabelFrame(main_frame, text="Execution Log", 
                                           font=("Arial", 11, "bold"), bg='#f0f0f0', fg='#333', relief='groove', bd=2)
@@ -432,7 +431,7 @@ class DataflowSimulator:
         graph_frame = tk.Frame(main_frame, bg='white', relief='sunken', bd=0)
         graph_frame.pack(side='top', fill='both', expand=True)
         
-        self.fig, self.ax = plt.subplots(figsize=(14, 7)) 
+        self.fig, self.ax = plt.subplots(figsize=(16, 10)) 
         self.fig.patch.set_facecolor('white')
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
 
@@ -440,10 +439,10 @@ class DataflowSimulator:
         self.toolbar = NavigationToolbar2Tk(self.canvas, graph_frame) # Master is 'self' (the main Tkinter window)
         self.toolbar.update()
         # Pack the toolbar first, at the top
-        self.toolbar.pack(side=tk.TOP, fill=tk.X, padx=5, pady=2) # Pack toolbar within graph_frame first
+        self.toolbar.pack(side=tk.TOP, fill=tk.X, padx=0, pady=0) # Pack toolbar within graph_frame first
  
         # Then pack the canvas widget, allowing it to expand
-        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5) # Canvas expands within graph_frame
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=0, pady=0) # Canvas expands within graph_frame
 
 
     def on_input_change(self, node_id):
