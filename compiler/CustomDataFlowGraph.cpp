@@ -15,7 +15,6 @@ DataflowNode::DataflowNode(DataflowOperatorType type, const llvm::Value* origina
     : Type(type), OriginalValue(originalValue), Label(label) {}
 
 // CustomDataflowGraph method implementations
-
 void CustomDataflowGraph::wireValueToNode(llvm::Value *V, DataflowNode *destN) {
     if (!V || !destN) return;
 
@@ -48,6 +47,69 @@ void CustomDataflowGraph::wireValueToNode(llvm::Value *V, DataflowNode *destN) {
         for (Value *op : I->operand_values())
             wireValueToNode(op, destN);
     }
+}
+
+void CustomDataflowGraph::removeNode(DataflowNode* nodeToRemove) {
+    if (!nodeToRemove) {
+        errs() << "Warning: Null node provided to removeNode\n";
+        return;
+    }
+
+    // Step 1: Remove all edges connected to the node
+    // A temporary vector to store edges to be removed
+    std::vector<DataflowEdge*> edgesToRemove;
+    for (DataflowEdge* edge : nodeToRemove->Inputs) {
+        edgesToRemove.push_back(edge);
+    }
+    for (DataflowEdge* edge : nodeToRemove->Outputs) {
+        edgesToRemove.push_back(edge);
+    }
+
+    for (DataflowEdge* edge : edgesToRemove) {
+        // Remove the edge from the graph's main Edges vector
+        auto it = std::find_if(Edges.begin(), Edges.end(), 
+            [edge](const std::unique_ptr<DataflowEdge>& edgePtr) {
+                return edgePtr.get() == edge;
+            });
+
+        if (it != Edges.end()) {
+            // Unlink from source and destination nodes' Input/Output lists
+            if (edge->Source) {
+                auto& sourceOutputs = edge->Source->Outputs;
+                sourceOutputs.erase(std::remove(sourceOutputs.begin(), sourceOutputs.end(), edge), sourceOutputs.end());
+            }
+            if (edge->Destination) {
+                auto& destInputs = edge->Destination->Inputs;
+                destInputs.erase(std::remove(destInputs.begin(), destInputs.end(), edge), destInputs.end());
+            }
+            Edges.erase(it);
+        }
+    }
+
+    // Step 2: Remove the node from the main Nodes list
+    auto nodeIt = std::find_if(Nodes.begin(), Nodes.end(),
+        [nodeToRemove](const std::unique_ptr<DataflowNode>& nodePtr) {
+            return nodePtr.get() == nodeToRemove;
+        });
+    
+    if (nodeIt != Nodes.end()) {
+        Nodes.erase(nodeIt);
+    }
+
+    // Step 3: Remove the node's entry from the ValueToNodeMap
+    // Find the key (OriginalValue) associated with the node
+    const llvm::Value* originalValue = nullptr;
+    for (const auto& pair : ValueToNodeMap) {
+        if (pair.second == nodeToRemove) {
+            originalValue = pair.first;
+            break;
+        }
+    }
+    if (originalValue) {
+        ValueToNodeMap.erase(originalValue);
+    }
+
+    errs() << "Node removed successfully.\n";
 }
 
 DataflowNode* CustomDataflowGraph::getOrAdd(llvm::Value *V) {

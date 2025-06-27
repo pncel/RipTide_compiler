@@ -160,7 +160,6 @@ class TokenBasedExecutor:
                     if (condition):
                         result_token = Token(B, node)
 
-        
         elif op_type == 'BasicBinaryOp':
             if arity == 2 and len(consumed_input_values) == 2:
                 a_val, b_val = consumed_input_values[0], consumed_input_values[1]

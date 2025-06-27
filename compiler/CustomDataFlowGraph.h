@@ -97,6 +97,10 @@ struct CustomDataflowGraph {
     // Modified getOrAdd to set basic types for Arguments and Constants
     DataflowNode* getOrAdd(llvm::Value *V);
 
+    // Remove a node and all its dependencies
+    void removeNode(DataflowNode* nodeToRemove);
+
+
     // Add a node to the graph
     DataflowNode* addNode(DataflowOperatorType type, const llvm::Value* originalValue = nullptr, const std::string& label = "");
 

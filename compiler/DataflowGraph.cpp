@@ -188,7 +188,7 @@ public:
                 customGraph.addEdge(fS, dest);
               }
             }
-            // TODO: Handle cases where a SelectInst is used by an Argument or Constant (less common)
+            // Handle cases where a SelectInst is used by an Argument or Constant (less common)
           }
         }
       }
@@ -324,6 +324,8 @@ public:
         }
       }
 
+      llvm::Value *const_duplicate = nullptr;
+
       // Pass 3: Add edges specifically for PHI nodes (Merges)
       for (auto &BB : F) {
         for (auto &I : BB) {
@@ -390,6 +392,21 @@ public:
                     // Wire D (decider) input to the Carry node
                     if (loopCondition) {
                         customGraph.wireValueToNode(loopCondition, phiNode);
+                        for (unsigned i = 0, e = PN->getNumIncomingValues(); i < e; ++i) {
+                          if (isa<Constant>(PN->getIncomingValue(i))) {
+                              // This adds an edge from the phi node to the loop condition node.
+                              // The loop condition is the 'decider' input.
+                              customGraph.addEdge(phiNode, customGraph.findNodeForValue(loopCondition));
+                              // Remove the now spare edge from the const input to the conditional node
+                              if (auto *cmpInst = dyn_cast<ICmpInst>(loopCondition)) {
+                                  // Get the constant operand.
+                                  // The operand '0' is at index 1 for the 'gt' predicate.
+                                  // For 'sgt' (signed greater than), the constant will be the second operand.
+                                  const_duplicate = cmpInst->getOperand(1);
+                              }
+                              break; // Found one, no need to check others.
+                          }
+                        }
                     } else {
                         errs() << "Warning: Could not determine loop condition for Carry node created from PHI in " << phiBlock->getName() << "\n";
                     }
@@ -468,13 +485,14 @@ public:
             if (Instruction *userInst = dyn_cast<Instruction>(user)) {
                 customGraph.wireValueToNode(&Arg, customGraph.getOrAdd(userInst));
             }
-            // TODO: Handle cases where an argument is used by another Argument or Constant (less common)
+            // Handle cases where an argument is used by another Argument or Constant (less common)
         }
     }
     
     // Hook up memory-dependency edges (store->load) - this function
     // in CustomDataflowGraph is currently a placeholder as per its implementation.
     customGraph.addMemDepEdges();
+    customGraph.removeNode(customGraph.findNodeForValue(const_duplicate));
 
     // Print the custom graph to a DOT file
     printCustomDFGToFile(customGraph, "dfg.dot");
