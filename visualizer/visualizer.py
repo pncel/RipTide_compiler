@@ -38,6 +38,8 @@ def infer_op_metadata(data):
     elif lbl == '+':
         meta['op'] = 'BasicBinaryOp'
         meta['op_symbol'] = '+'
+    elif lbl == 'C':
+        meta['op'] = 'Carry'
     elif lbl == '>':
         meta['op'] = 'BasicBinaryOp'
         meta['op_symbol'] = '>'
@@ -95,8 +97,8 @@ class TokenBasedExecutor:
         if op_type in ['Constant', 'FunctionInput', 'Stream']:
             return 0
         elif op_type == 'Load':
-            return 2
-        elif op_type in ['BasicBinaryOp', 'TS', 'FS']:
+            return 3
+        elif op_type in ['BasicBinaryOp', 'TS', 'FS', 'Carry']:
             return 2
         elif op_type in ['Merge', 'Store']:
             return 3
@@ -146,8 +148,18 @@ class TokenBasedExecutor:
             value = self.G.nodes[node].get('arg_value', 0)
             result_token = Token(value, node)
         
-        elif op_type == 'Stream':
-            result_token = Token(True, node)
+        elif op_type == 'Carry':
+            if arity == 2 and len(consumed_input_values) >= 2:
+                A, B = consumed_input_values[0], consumed_input_values[1]
+                if (consumed_input_values == 2):
+                    consumed_count = 2
+                    result_token = Token(A, node)
+                elif (consumed_input_values == 3):
+                    consumed_count = 3
+                    condition =  consumed_input_values[2] 
+                    if (condition):
+                        result_token = Token(B, node)
+
         
         elif op_type == 'BasicBinaryOp':
             if arity == 2 and len(consumed_input_values) == 2:
@@ -188,12 +200,14 @@ class TokenBasedExecutor:
                 if result is not None: result_token = Token(result, node)
         
         elif op_type == 'Load':
-            if arity == 2 and len(consumed_input_values) == 2:
-                addr, offset_val = consumed_input_values[0], consumed_input_values[1] 
-                consumed_count = 2
-                final_address = addr + offset_val if isinstance(addr, (int,float)) and isinstance(offset_val, (int,float)) else addr # Fallback if not numeric
-                value = memory.get(final_address)
-                if value is not None: result_token = Token(value, node)
+            if arity == 3 and len(consumed_input_values) == 3:
+                addr, offset_val, valid_bit = consumed_input_values[0], consumed_input_values[1], consumed_input_values[2] 
+                if (valid_bit):
+                    consumed_count = 3
+                    final_address = addr + offset_val if isinstance(addr, (int,float)) and isinstance(offset_val, (int,float)) else addr # Fallback if not numeric
+                    value = memory.get(final_address)
+                    if value is not None: 
+                        result_token = Token(value, node)
         
         elif op_type == 'Store':
             if arity == 3 and len(consumed_input_values) == 3:
@@ -201,7 +215,8 @@ class TokenBasedExecutor:
                 consumed_count = 3
                 final_address = addr + offset if isinstance(addr, (int,float)) and isinstance(offset, (int,float)) else addr # Fallback
                 memory[final_address] = val_to_store
-                result_token = Token(val_to_store, node)
+                valid_bit_out = 1
+                result_token = Token(valid_bit_out, node)
         
         elif op_type == 'TS': 
             if arity == 2 and len(consumed_input_values) == 2:
