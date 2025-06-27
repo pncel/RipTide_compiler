@@ -2,12 +2,10 @@
 
 ### TODO:
 
-* Check memory ordering pass
-* Implement carry
-* Implement order 
-* Implement invariant
-* Remove need for Stream operator
+* Remove return node references from visualizer/visualizer.py
 * Implement Mapper
+* Implement order (optional)
+* Implement invariant (optional)
 
 ## Getting started
 
