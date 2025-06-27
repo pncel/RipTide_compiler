@@ -158,7 +158,20 @@ void printCustomDFGToFile(const CustomDataflowGraph &customGraph, const std::str
         case DataflowOperatorType::TrueSteer: return "triangle";
         case DataflowOperatorType::FalseSteer: return "invtriangle";
         case DataflowOperatorType::Merge: return "octagon";
-        case DataflowOperatorType::Carry: return "box";
+        case DataflowOperatorType::Carry: return "box"; /* Carry.Carryrepresentsaloop-carrieddependencyandtakesa
+ decider,D,andtwodatavalues,AandB.Carryhastheinternal
+ statemachineshowninFig.3. IntheInitial state, itwaitsfor
+ A, andthenpasses it throughandtransitions totheBlockstate.
+ WhileinBlock, ifDisTrue, theoperatorpasses throughB. It
+ transitionsbacktoInitialwhenDisFalse, andbeginswaiting
+ for thenextAvalue(ifnotalreadybufferedat theinput).
+ Carryoperatorskeeptokensorderedinloops,eliminatingthe
+ needtotagtokens.Allbackedgesareroutedthroughacarry
+ operator inRipTide.BynotconsumingAwhileinBlock,carry
+ operatorspreventouter loopsfromspawninganewinner-loop
+ instancebeforethepreviousonehasfinished. (Iterationsfrom
+ oneinner-loopmaybepipelinedif theyareindependent,but
+ entireinstancesof theinner loopwillbeserialized.)*/
         case DataflowOperatorType::Invariant: return "box";
         case DataflowOperatorType::Order: return "box";
         case DataflowOperatorType::Stream: return "circle";
@@ -177,6 +190,7 @@ void printCustomDFGToFile(const CustomDataflowGraph &customGraph, const std::str
         switch (node->Type) {
             case DataflowOperatorType::BasicBinaryOp: label = "BinOp"; break;
             case DataflowOperatorType::Load: label = "Load"; break;
+            case DataflowOperatorType::Constant: label = "Constant"; break;
             case DataflowOperatorType::Store: label = "Store"; break;
             case DataflowOperatorType::TrueSteer: label = "TrueSteer"; break;
             case DataflowOperatorType::FalseSteer: label = "FalseSteer"; break;
@@ -185,31 +199,25 @@ void printCustomDFGToFile(const CustomDataflowGraph &customGraph, const std::str
             case DataflowOperatorType::Invariant: label = "Invariant"; break;
             case DataflowOperatorType::Order: label = "Order"; break;
             case DataflowOperatorType::Stream: label = "Stream"; break;
-            case DataflowOperatorType::FunctionInput: label = "Input"; break;
-            case DataflowOperatorType::FunctionOutput: label = "Output"; break;
-            case DataflowOperatorType::Constant: label = "Const"; break;
             default: label = "Unknown"; break;
         }
         if (node->OriginalValue) {
-            std::string valueStr;
-            raw_string_ostream ss(valueStr);
+            std::string ss_str;
+            llvm::raw_string_ostream ss(ss_str);
             node->OriginalValue->print(ss);
             label += "\\n" + ss.str();
         }
         return label;
     };
 
-    // Lambda to check if a node should be included even if it has no inputs/outputs
-    auto shouldIncludeEmptyNode = [](const DataflowNode* node) {
-      return node->Type == DataflowOperatorType::FunctionInput  ||
-          node->Type == DataflowOperatorType::FunctionOutput ||
-          node->Type == DataflowOperatorType::Merge        ;
-    };
-
     for (const auto& nodePtr : customGraph.Nodes) {
-      // Skip nodes that have neither inputs nor outputs, unless they are specific types
-      if (nodePtr->Inputs.empty() && nodePtr->Outputs.empty() && !shouldIncludeEmptyNode(nodePtr.get())) continue;
       const DataflowNode* node = nodePtr.get();
+
+      // Dont create any node that has no outputs
+      if (node->Outputs.empty()) {
+          continue;
+      }
+      
       std::string nodeName = "node" + std::to_string(id++);
       nodeNames[node] = nodeName;
 
@@ -229,4 +237,6 @@ void printCustomDFGToFile(const CustomDataflowGraph &customGraph, const std::str
     }
 
     outFile << "}\n";
+    outFile.close();
+    errs() << "Custom DFG written to " << filename << "\n";
 }

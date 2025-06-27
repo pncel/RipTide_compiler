@@ -24,7 +24,7 @@ echo "Regenerating LLVM IR"
 clang -Os -fno-vectorize -S -emit-llvm ../test/test_active.c -o ../test/test_active.ll
 
 echo "Running custom memory ordering enforcement pass, as well as the standard instcombine and dce optimization passes.."
-/usr/local/bin/opt -load-pass-plugin ./EnforceMemOrderPass.so -passes="EnforceMemOrderPass,instcombine,dce" -S ../test/test_active.ll -o ../test/test_active_mem_enforced.ll
+/usr/local/bin/opt -load-pass-plugin ./EnforceMemOrderPass.so -passes="EnforceMemOrderPass,instcombine,dce,loop-simplify" -S ../test/test_active.ll -o ../test/test_active_mem_enforced.ll
 
 echo "Running DataflowGraph generation pass..."
 /usr/local/bin/opt -load-pass-plugin ./DataflowGraph.so -passes=DataflowGraph -disable-output ../test/test_active_mem_enforced.ll

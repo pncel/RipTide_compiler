@@ -109,6 +109,9 @@ struct CustomDataflowGraph {
     // New helper: hook all loads after a store into that store
     // (Note: This is a simplistic model, a proper one would require alias analysis.)
     void addMemDepEdges();
+
+    // New pruning method
+    void pruneNodes();
 };
 
 // Function to print the custom graph to a DOT file

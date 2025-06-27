@@ -16,7 +16,10 @@ for.body.preheader:                               ; preds = %entry
   %wide.trip.count = zext nneg i32 %n to i64
   br label %for.body
 
-for.cond.cleanup:                                 ; preds = %for.body, %entry
+for.cond.cleanup.loopexit:                        ; preds = %for.body
+  br label %for.cond.cleanup
+
+for.cond.cleanup:                                 ; preds = %for.cond.cleanup.loopexit, %entry
   ret void
 
 for.body:                                         ; preds = %for.body, %for.body.preheader
@@ -32,7 +35,7 @@ for.body:                                         ; preds = %for.body, %for.body
   %3 = call i1 @lso.store.i32(ptr %arrayidx2, i32 %add8) #1
   %indvars.iv.next = add nuw nsw i64 %indvars.iv, 1
   %exitcond.not = icmp eq i64 %indvars.iv.next, %wide.trip.count
-  br i1 %exitcond.not, label %for.cond.cleanup, label %for.body, !llvm.loop !5
+  br i1 %exitcond.not, label %for.cond.cleanup.loopexit, label %for.body, !llvm.loop !5
 }
 
 declare i1 @lso.store.i32(ptr, i32)

@@ -28,20 +28,6 @@ using namespace llvm::sys;
 
 namespace {
 class DataflowGraph : public PassInfoMixin<DataflowGraph> {
-
-  // We'll use a single stream token at function entry as the data input for
-  // all branch-based steering.
-  DataflowNode *getOrCreateFuncEntryStream(CustomDataflowGraph &G, Function &F) {
-    static const char *ENTRY_LABEL = "_entry_stream";
-    // Only create once per function
-    if (auto *N = G.findNodeForValue(reinterpret_cast<const Value*>(ENTRY_LABEL)))
-      return N;
-    // Add a special stream node
-    auto *streamN = G.addNode(DataflowOperatorType::Stream, nullptr, "STR");
-    // "Tie" it to a fake Value* so we can look it up again
-    G.ValueToNodeMap[reinterpret_cast<const Value*>(ENTRY_LABEL)] = streamN;
-    return streamN; 
-  }
   
   // Helper to unify steering logic
   std::pair<DataflowNode*,DataflowNode*>
@@ -92,7 +78,9 @@ public:
           FCmpInst *FI_fcmp = nullptr; // Use a distinct variable name for FCmpInst
           if (isa<SelectInst>(&I) || isa<GetElementPtrInst>(&I)
             || (isa<BranchInst>(&I) && cast<BranchInst>(&I)->isConditional()) ||
-            isa<CastInst>(&I) )
+            isa<CastInst>(&I) ||
+            isa<ReturnInst>(&I) // MODIFIED: Skip ReturnInst during node creation
+          )
             continue; // These are handled specially or by wireValueToNode
 
           DataflowOperatorType opType = DataflowOperatorType::Unknown;
@@ -141,8 +129,6 @@ public:
           } else if (isa<PHINode>(&I)) {
               opType = DataflowOperatorType::Merge;
               label = "M"; // Based on image
-          } else if (isa<ReturnInst>(&I)) {
-              label = "ret"; // Still include return for graph termination visualization
           } 
           // Add checks for other instruction types you want to represent
 
@@ -156,47 +142,6 @@ public:
             instNode->OpSymbol = sym;       // store the symbol
           }
         }
-    }
-
-    // Pass 1.3: handle all conditional branches up-front
-    for (auto &BB : F) {
-      for (auto &I : BB) {
-        if (auto *BI = dyn_cast<BranchInst>(&I)) {
-          if (BI->isConditional()) {
-            // Setup steer nodes and wire condition
-            auto [tS,fS] = createSteers(customGraph,
-                                      BI->getCondition(),
-                                      nullptr,
-                                      nullptr); 
-            BranchSteers[BI] = {tS,fS};
-            
-            // Hook the entry stream into each branch-steer
-            DataflowNode *entryStr = getOrCreateFuncEntryStream(customGraph, F);
-            customGraph.addEdge(entryStr, tS);
-            customGraph.addEdge(entryStr, fS);
-             
-            // Wire each steer into the first "real" instruction of its successor,
-            // skipping PHI, GEP, Casts which we treat as transparent.
-            auto skipPassThroughs = [](BasicBlock *BB) -> Instruction* {
-              for (auto &I_in_bb : *BB) { // Renamed 'I' to 'I_in_bb' to avoid conflict
-                if (isa<PHINode>(I_in_bb))          continue;
-                if (isa<GetElementPtrInst>(I_in_bb)) continue;
-                if (isa<CastInst>(I_in_bb))         continue;
-                return &I_in_bb;
-              }
-              return nullptr;
-            };
-            if (auto *succ = BI->getSuccessor(0)) {
-              if (auto *realI = skipPassThroughs(succ))
-                customGraph.addEdge(tS, customGraph.getOrAdd(realI));
-            }
-            if (auto *succ = BI->getSuccessor(1)) {
-              if (auto *realI = skipPassThroughs(succ))
-                customGraph.addEdge(fS, customGraph.getOrAdd(realI));
-            }
-          } 
-        }
-      }
     }
     
     // Add nodes for function arguments
@@ -248,6 +193,7 @@ public:
         }
       }
     }
+
 
     // Pass 2: Add edges based on data dependencies and handle special instructions
     for (auto &BB : F) {
@@ -348,7 +294,8 @@ public:
           // skip control ops entirely or types handled explicitly above
           if (isa<BranchInst>(&I)   ||
             isa<PHINode>(&I)      ||
-            isa<SelectInst>(&I)
+            isa<SelectInst>(&I)   ||
+            isa<ReturnInst>(&I)   // MODIFIED: Explicitly skip ReturnInst here too
           )
             continue;
           
@@ -379,57 +326,136 @@ public:
 
       // Pass 3: Add edges specifically for PHI nodes (Merges)
       for (auto &BB : F) {
-         for (auto &I : BB) {
+        for (auto &I : BB) {
             if (auto *PN = dyn_cast<PHINode>(&I)) {
+                DataflowNode *phiNode = customGraph.findNodeForValue(PN);
+                if (!phiNode) continue;
 
-              DataflowNode *mergeNode = customGraph.findNodeForValue(PN);
-                if (!mergeNode) {
-                    // This should have been added in Pass 1, but as a safeguard:
-                    mergeNode = customGraph.addNode(DataflowOperatorType::Merge, PN, "M");
+                BasicBlock *phiBlock = PN->getParent();
+                Loop *L = LI.getLoopFor(phiBlock);
+                bool isLoopCarried = false;
+
+                // Check if this is a loop-header PHI with a back-edge dependency
+                if (L && L->getHeader() == phiBlock) {
+                    for (unsigned i = 0, e = PN->getNumIncomingValues(); i < e; ++i) {
+                        BasicBlock *inBB = PN->getIncomingBlock(i);
+                        // A back-edge is an edge from a block inside the loop to the header
+                        if (L->contains(inBB)) {
+                             isLoopCarried = true;
+                             break;
+                        }
+                    }
+                }
+
+                if (isLoopCarried) {
+                    // --- This is a loop-carried dependency, create a CARRY node ---
+                    phiNode->Type = DataflowOperatorType::Carry;
+                    phiNode->Label = "C";
+                    phiNode->OpSymbol = ""; // Carry doesn't have a simple symbol
+
+                    // Robustly find the loop's governing condition using LoopInfo.
+                    // This is the condition that determines whether to continue or exit the loop.
+                    
+                    Value *loopCondition = nullptr;
+                    
+                    // First, find the loop's preheader.
+                    BasicBlock *preheader = L->getLoopPredecessor();
+
+                    if (preheader) {
+                        // Now, find the block that branches into the preheader.
+                        // In your example IR, this is the 'entry' block.
+                        // The `getSinglePredecessor()` method is a safe way to get the predecessor
+                        // if there's only one.
+                        if (BasicBlock *pre_preheader = preheader->getSinglePredecessor()) {
+                            // Check the terminator instruction of the 'pre_preheader' block.
+                            if (auto *BI = dyn_cast<BranchInst>(pre_preheader->getTerminator())) {
+                                // If the terminator is a conditional branch, get its condition.
+                                if (BI->isConditional()) {
+                                    loopCondition = BI->getCondition();
+                                }
+                            }
+                        }
+                    }
+
+                    BasicBlock *exitingBlock = L->getExitingBlock();
+                    
+                    if (exitingBlock && !loopCondition) {
+                        if (auto *BI = dyn_cast<BranchInst>(exitingBlock->getTerminator())) {
+                            if (BI->isConditional()) {
+                                loopCondition = BI->getCondition();
+                            }
+                        }
+                    }
+
+                    // Wire D (decider) input to the Carry node
+                    if (loopCondition) {
+                        customGraph.wireValueToNode(loopCondition, phiNode);
+                    } else {
+                        errs() << "Warning: Could not determine loop condition for Carry node created from PHI in " << phiBlock->getName() << "\n";
+                    }
+
+                    // Wire A (initial value) and B (carried value) inputs
+                    for (unsigned i = 0, e = PN->getNumIncomingValues(); i < e; ++i) {
+                        Value *inVal = PN->getIncomingValue(i);
+                        customGraph.wireValueToNode(inVal, phiNode);
+                    }
+
+                } else {
+                    // --- This is a standard MERGE node ---
+                    phiNode->Type = DataflowOperatorType::Merge;
+                    phiNode->Label = "M";
+
+                    for (unsigned i = 0, e = PN->getNumIncomingValues(); i < e; ++i) {
+                        Value *inVal = PN->getIncomingValue(i);
+                        BasicBlock *inBB = PN->getIncomingBlock(i);
+                        auto *term = inBB->getTerminator();
+                        
+                        // Find the conditional branch that led to this PHI
+                        if (auto* BI = dyn_cast<BranchInst>(term)) {
+                            if (BI->isConditional()) {
+                                // MODIFIED: "Get or create" steer nodes on-demand.
+                                auto it = BranchSteers.find(BI);
+                                if (it == BranchSteers.end()) {
+                                    // Steers for this branch don't exist, create them now.
+                                    auto [tS, fS] = createSteers(customGraph, BI->getCondition(), nullptr, nullptr);
+                                    it = BranchSteers.insert({BI, {tS, fS}}).first;
+                                }
+
+                                // Determine if this is the true or false path for this PHI.
+                                DataflowNode *steerNode;
+                                if (BI->getSuccessor(0) == phiBlock) {
+                                    steerNode = it->second.first;  // TrueSteer
+                                } else {
+                                    assert(BI->getSuccessor(1) == phiBlock && "PHI block is not a successor of the conditional branch");
+                                    steerNode = it->second.second; // FalseSteer
+                                }
+                                    
+                                // Wire the data value to the steer, and the steer to the merge.
+                                customGraph.wireValueToNode(inVal, steerNode);
+                                customGraph.addEdge(steerNode, phiNode);
+
+                            } else {
+                               // This path is from an unconditional branch, wire it directly.
+                               customGraph.wireValueToNode(inVal, phiNode);
+                            }
+                        } else {
+                           // Terminator is not a BranchInst (e.g. InvokeInst), wire directly.
+                           customGraph.wireValueToNode(inVal, phiNode);
+                        }
+                    }
                 }
                 
-                // Connect incoming values to the Merge node
-                for (unsigned i = 0, e = PN->getNumIncomingValues(); i < e; ++i) {
-                  Value      *inVal = PN->getIncomingValue(i);
-                  BasicBlock *inBB  = PN->getIncomingBlock(i);
-
-                  // 1) Wire the “true or false” steer node
-                  if (auto *term = dyn_cast<BranchInst>(inBB->getTerminator()))
-                    if (term->isConditional()) {
-                      auto it = BranchSteers.find(term);
-                      if (it != BranchSteers.end()) {
-                        DataflowNode *steer =
-                          (term->getSuccessor(0) == PN->getParent())
-                            ? it->second.first   // true‐steer
-                            : it->second.second; // false‐steer
-                        if (steer)
-                          customGraph.addEdge(steer, mergeNode);
-                      }
+                // Wire outputs from the Merge/Carry node to its users
+                for (User *U : PN->users()) {
+                    if (auto *userInst = dyn_cast<Instruction>(U)) {
+                        if (auto *dest = customGraph.findNodeForValue(userInst)) {
+                            customGraph.addEdge(phiNode, dest);
+                        }
                     }
-
-                  // 2) Wire the “decider” itself (the icmp/fcmp) as D
-                  if (auto *term = dyn_cast<BranchInst>(inBB->getTerminator()))
-                    if (term->isConditional()) {
-                      DataflowNode *condN = customGraph.findNodeForValue(term->getCondition());
-                      if (condN)
-                        customGraph.addEdge(condN, mergeNode);
-                    }
-
-                  // 3) Wire the actual data value (A or B)
-                  // Use wireValueToNode to handle GEPs and Casts transparently
-                  customGraph.wireValueToNode(inVal, mergeNode);
-              }
-              // Wire outputs: from Merge node to its users
-              for (User *U : PN->users()) {
-                if (auto *userInst = dyn_cast<Instruction>(U)) {
-                  if (auto *dest = customGraph.findNodeForValue(userInst)) {
-                    customGraph.addEdge(mergeNode, dest);
-                  }
                 }
-              }
             }
-         }
-      }
+        }
+    }
 
     // Pass 4: Add edges from Function Arguments to their users
     for (auto& Arg : F.args()) {
@@ -463,7 +489,7 @@ public:
 // Plugin registration for new LLVM pass manager
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo llvmGetPassPluginInfo() {
   return {
-    LLVM_PLUGIN_API_VERSION, "DataflowGraph", "v0.7", // Updated version
+    LLVM_PLUGIN_API_VERSION, "DataflowGraph", "v0.8", // Updated version
     [](PassBuilder &PB) {
       PB.registerPipelineParsingCallback(
         [](StringRef Name, FunctionPassManager &FPM,
