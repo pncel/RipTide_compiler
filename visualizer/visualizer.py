@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import matplotlib
+import sys
 matplotlib.use('TkAgg')
 
 # Global memory for Load/Store operations
@@ -54,8 +55,6 @@ def infer_op_metadata(data):
         meta['op'] = 'TS' # True Steer
     elif lbl == "F":
         meta['op'] = 'FS' # False Steer
-    elif lbl == 'ret':
-        meta['op'] = 'Return'
     else:
         print("Unknown: ", lbl, shape)
         meta['op'] = 'Unknown'
@@ -102,12 +101,6 @@ class TokenBasedExecutor:
             return 2
         elif op_type in ['Merge', 'Store']:
             return 3
-        elif op_type == 'Return':
-            # Return can have variable inputs, but typically consumes one data token
-            # For simplicity, let's assume it consumes the first available token if any.
-            # If strict arity based on predecessors is needed, it's len(list(self.G.predecessors(node_id)))
-            # but often only one input is the 'data' to return. We'll make it consume 1.
-            return 1 if len(list(self.G.predecessors(node_id))) > 0 else 0
         else: 
             return len(list(self.G.predecessors(node_id)))
 
@@ -235,18 +228,6 @@ class TokenBasedExecutor:
                 consumed_count = 3
                 result = true_val if decider else false_val
                 result_token = Token(result, node)
-        
-        elif op_type == 'Return':
-            if arity > 0 and consumed_input_values: # Requires at least one input based on arity
-                self.return_value = consumed_input_values[0] # Return the first consumed input
-                self.completed = True
-                result_token = Token(self.return_value, node)
-                consumed_count = arity # Consume all defined inputs for return
-            elif arity == 0: # Return node with no predecessors, can complete
-                 self.completed = True
-                 self.return_value = None # Or a default value
-                 result_token = Token(self.return_value, node)
-
 
         if result_token:
             self.node_values[node] = result_token.value
@@ -305,32 +286,25 @@ def read_graph(dot_path):
     try:
         G_raw = nx.drawing.nx_pydot.read_dot(dot_path)
         G = nx.DiGraph()
-        if G_raw.nodes(): 
-            G.add_nodes_from(G_raw.nodes(data=True))
-            G.add_edges_from(G_raw.edges(data=True))
+        if not G_raw.nodes():
+            return G
 
-        for n in G.nodes():
-            node_attrs = G.nodes[n]
-            meta = infer_op_metadata(node_attrs)
-            for k, v in meta.items():
-                G.nodes[n][k] = v
+        # Only add nodes with recognized labels
+        for n, data in G_raw.nodes(data=True):
+            meta = infer_op_metadata(data)
+            if meta.get('op') == 'Unknown':
+                print(f"Skipping unknown node: {n}")
+                continue
+            G.add_node(n, **data, **meta)
+
+        # Add edges only if both endpoints exist in the filtered node set
+        G.add_edges_from((u, v, d) for u, v, d in G_raw.edges(data=True) if u in G.nodes and v in G.nodes)
+
         return G
     except Exception as e:
         print(f"Error reading graph: {e}")
-        messagebox.showerror("Graph Read Error", f"Could not read or parse .dot file: {dot_path}\n{e}\nLoading a default example graph.")
-        G = nx.DiGraph() # Minimal default graph
-        G.add_node('inp', op='FunctionInput', param_name='%A', arg_value=5, label='%A')
-        G.add_node('const', op='Constant', value=10, label='Const\n10')
-        G.add_node('add', op='BasicBinaryOp', op_symbol='+', label='+')
-        G.add_node('ret', op='Return', label='ret')
-        G.add_edge('inp', 'add')
-        G.add_edge('const', 'add')
-        G.add_edge('add', 'ret')
-        for n_id in G.nodes(): # Re-apply metadata for default
-            meta = infer_op_metadata(G.nodes[n_id])
-            for k,v in meta.items(): G.nodes[n_id][k] = v
-        return G
-
+        messagebox.showerror("Graph Read Error", f"Could not read or parse .dot file: {dot_path}\n{e}\n")
+        sys.exit()
 
 # Enhanced layout with dot option preferred
 def create_enhanced_layout(G, layout_type='dot'):
@@ -446,6 +420,8 @@ class DataflowSimulator:
         graph_frame.pack(side='top', fill='both', expand=True)
         
         self.fig, self.ax = plt.subplots(figsize=(16, 10)) 
+        self.fig.subplots_adjust(left=0.0, bottom=0.0, right=1.0, top=1.0)
+
         self.fig.patch.set_facecolor('white')
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
 
@@ -596,10 +572,8 @@ class DataflowSimulator:
 
         if self.executor.execution_sequence: 
             last_step_details = self.executor.execution_sequence[-1]['execution_details']
-            is_return_step = any(self.executor.G.nodes[detail['node_id']].get('op') == 'Return' 
-                                 for detail in last_step_details)
 
-            if not is_return_step and not self.executor.completed:
+            if not self.executor.completed:
                 for detail in last_step_details:
                     if detail['result_token']: 
                         source_node = detail['node_id']
@@ -611,15 +585,15 @@ class DataflowSimulator:
             if n in last_step_executed_node_ids:
                 node_colors.append('orange'); node_sizes.append(800)
             elif n in all_executed_node_ids_ever:
-                node_colors.append('lightgreen' if not (op_type == 'Return' and self.executor.completed) else 'gold')
-                node_sizes.append(800)
+                node_colors.append('lightgreen' if not (self.executor.completed) else 'gold')
+                node_sizes.append(1200)
             else:
                 if op_type == 'Stream': node_colors.append('salmon')
                 elif op_type == 'FunctionInput': node_colors.append('lightblue')
                 elif op_type == 'Constant': node_colors.append('lightsteelblue')
                 elif op_type == 'Return': node_colors.append('wheat')
                 else: node_colors.append('lightgray')
-                node_sizes.append(700)
+                node_sizes.append(1100)
 
         all_edges = list(self.G.edges())
         inactive_edges = [e for e in all_edges if e not in active_edges]
@@ -650,29 +624,18 @@ class DataflowSimulator:
             elif op_type == 'Stream': base_label = "STR"
             elif op_type == 'Return': base_label = "ret"
             elif op_type == 'BasicBinaryOp': base_label = node_data_g.get('op_symbol', '?')
-            elif op_type == 'TS': base_label = "T S" 
-            elif op_type == 'FS': base_label = "F S" 
+            elif op_type == 'TS': base_label = "TS" 
+            elif op_type == 'FS': base_label = "FS" 
             elif op_type == 'Load': base_label = "ld"
             elif op_type == 'Store': base_label = "st"
             elif op_type == 'Merge': base_label = "M"
+            elif op_type == 'Carry': base_label = "C"
+
             else: base_label = op_type
             labels[n] = f"{base_label}{current_value_str}"
         
         nx.draw_networkx_labels(self.G, self.layout, labels, font_size=8, ax=self.ax, font_weight='normal', verticalalignment='center')
         
-        #title_text = "Token Dataflow Simulation"
-        #if self.current_step == 0: title_text = "Ready to Start. Click 'Next Step'."
-        #elif self.executor.completed: 
-        #    ret_val_str = f"{self.executor.return_value:.2f}" if isinstance(self.executor.return_value, float) else str(self.executor.return_value)
-        #    title_text = f"Simulation Complete! Return Value: {ret_val_str}"
-        #elif self.executor.execution_sequence:
-        #    last_exec_details = self.executor.execution_sequence[-1]['execution_details']
-        #    nodes_str = [d['node_id'] for d in last_exec_details]
-        #    results_str = [f"{d['result_token'].value:.2f}" if isinstance(d['result_token'].value, float) else str(d['result_token'].value) 
-        #                   for d in last_exec_details if d['result_token'] is not None]
-        #    title_text = f"Step {self.current_step}: Nodes: {nodes_str} -> {results_str}"
-        
-        #self.ax.set_title(title_text, fontsize=13, fontweight='bold', pad=15)
         memory_str = ", ".join([f"{k}:{v}" for k,v in sorted(memory.items())]) if memory else "{}"
         self.ax.text(0.01, 0.98, f"Memory: {memory_str}", transform=self.ax.transAxes, fontsize=9, verticalalignment='top', bbox=dict(boxstyle="round,pad=0.3", facecolor="khaki", alpha=0.7))
         
@@ -701,7 +664,13 @@ def main():
     if G.nodes(): layout = create_enhanced_layout(G, args.layout)
     else: print("Warning: Graph is empty.")
 
+    def on_close():
+        root.destroy()
+        plt.close('all')  # Close all matplotlib figures
+        sys.exit(0)       # Ensure the script terminates
+
     root = tk.Tk()
+    root.protocol("WM_DELETE_WINDOW", on_close)  # Handle the X button
     app = DataflowSimulator(root, G, layout)
     root.mainloop()
 
