@@ -2,7 +2,9 @@
 
 ### TODO:
 
-* Remove return node references from visualizer/visualizer.py
+* Each node need to have predetermined input locations and aware of where its sending its outputs.
+  * For example a comparison op works like: A comp B. If A is sent to the location of B then that wont be a correct output.
+  * Need to figure out a way to ensure A always gets sent to the correct spot etc...
 * Implement Mapper
 * Implement order (optional)
 * Implement invariant (optional)
