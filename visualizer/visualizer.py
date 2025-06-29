@@ -131,7 +131,7 @@ class TokenBasedExecutor:
         arity = self.get_op_arity(node)
         
         if arity > 0 and len(current_input_tokens) >= arity:
-            consumed_input_values = [t.value for t in current_input_tokens[:arity]]
+            consumed_input_values = [t.value for t in current_input_tokens]
 
         if op_type == 'Constant':
             value = self.G.nodes[node].get('value', 0)
@@ -144,10 +144,10 @@ class TokenBasedExecutor:
         elif op_type == 'Carry':
             if arity == 2 and len(consumed_input_values) >= 2:
                 A, B = consumed_input_values[0], consumed_input_values[1]
-                if (consumed_input_values == 2):
+                if (len(consumed_input_values) == 2):
                     consumed_count = 2
                     result_token = Token(A, node)
-                elif (consumed_input_values == 3):
+                elif (len(consumed_input_values) == 3):
                     consumed_count = 3
                     condition =  consumed_input_values[2] 
                     if (condition):
@@ -351,7 +351,7 @@ class DataflowSimulator:
         
         # Control frame (packed first from the bottom to reserve its space)
         # MODIFIED: Reduced height from 200 to 160
-        control_frame = tk.Frame(main_frame, bg='#e0e0e0', relief='raised', bd=2, height=160) 
+        control_frame = tk.Frame(main_frame, bg='#e0e0e0', relief='raised', bd=2, height=180) 
         control_frame.pack(side='bottom', fill='x', pady=(5, 0))
         control_frame.pack_propagate(False) # Prevent child widgets from shrinking it
         
@@ -388,6 +388,27 @@ class DataflowSimulator:
         else:
             tk.Label(input_outer_frame, text="No function inputs in graph.", font=("Arial", 10), bg='#e0e0e0').pack(padx=10, pady=20, anchor='center')
 
+        # Memory Control Frame
+        mem_control_frame = tk.LabelFrame(control_inner, text="Memory Control",
+                                          font=("Arial", 11, "bold"), bg='#e0e0e0', fg='#333')
+        mem_control_frame.pack(side='left', fill='y', padx=(0, 10), ipadx=10)
+        
+        mem_edit_inner_frame = tk.Frame(mem_control_frame, bg='#e0e0e0')
+        mem_edit_inner_frame.pack(expand=True, pady=5, padx=5)
+
+        tk.Label(mem_edit_inner_frame, text="Address:", font=("Arial", 10), bg='#e0e0e0').grid(row=0, column=0, sticky='w', pady=2)
+        self.mem_addr_entry = tk.Entry(mem_edit_inner_frame, font=("Arial", 10), width=12)
+        self.mem_addr_entry.grid(row=0, column=1, pady=2, padx=5)
+
+        tk.Label(mem_edit_inner_frame, text="Value:", font=("Arial", 10), bg='#e0e0e0').grid(row=1, column=0, sticky='w', pady=2)
+        self.mem_val_entry = tk.Entry(mem_edit_inner_frame, font=("Arial", 10), width=12)
+        self.mem_val_entry.grid(row=1, column=1, pady=2, padx=5)
+        
+        self.set_mem_button = tk.Button(mem_edit_inner_frame, text="Set Memory", command=self.set_memory_value,
+                                        font=("Arial", 10, "bold"), bg='#2196F3', fg='white', relief='raised', bd=2)
+        self.set_mem_button.grid(row=2, column=0, columnspan=2, pady=10)
+
+
         control_right = tk.LabelFrame(control_inner, text="Simulation Control", font=("Arial", 11, "bold"), bg='#e0e0e0', fg='#333')
         control_right.pack(side='right', fill='y', padx=(10, 0), ipadx=10)
         center_frame = tk.Frame(control_right, bg='#e0e0e0')
@@ -396,8 +417,6 @@ class DataflowSimulator:
         self.step_button.pack(pady=(5, 8))
         self.reset_button = tk.Button(center_frame, text="Reset", command=self.reset_simulation, font=("Arial", 10), bg='#f44336', fg='white', padx=15, pady=5, relief='raised', bd=2, width=12)
         self.reset_button.pack(pady=8)
-        self.status_label = tk.Label(center_frame, text="Step: 0", font=("Arial", 11, "bold"), bg='#e0e0e0', height=2) # Assuming status_label should be here
-        self.status_label.pack(pady=(8, 5))
 
         # Log display frame (packed next from the bottom, placing it above controls)
         log_display_frame = tk.LabelFrame(main_frame, text="Execution Log", 
@@ -434,6 +453,45 @@ class DataflowSimulator:
         # Then pack the canvas widget, allowing it to expand
         self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=0, pady=0) # Canvas expands within graph_frame
 
+    def set_memory_value(self):
+        global memory
+        addr_str = self.mem_addr_entry.get().strip()
+        val_str = self.mem_val_entry.get().strip()
+        
+        if not addr_str or not val_str:
+            messagebox.showerror("Input Error", "Address and Value cannot be empty.")
+            return
+
+        try:
+            # Parse address - try int, then float, else keep as string
+            try: address = int(addr_str)
+            except ValueError:
+                try: address = float(addr_str)
+                except ValueError: address = addr_str # Fallback to string if not numeric
+
+            # Parse value - try int, then float, else keep as string
+            try: value = int(val_str)
+            except ValueError:
+                try: value = float(val_str)
+                except ValueError: value = val_str # Fallback to string
+            
+            memory[address] = value
+            
+            # Log the manual memory write
+            self.log_text_area.config(state='normal')
+            log_line = f"--- Manual Memory Write ---\nAddress: {address}\tValue: {value}\n"
+            self.log_text_area.insert(tk.END, log_line)
+            self.log_text_area.see(tk.END)
+            self.log_text_area.config(state='disabled')
+            
+            # Clear entries for next input
+            self.mem_addr_entry.delete(0, tk.END)
+            self.mem_val_entry.delete(0, tk.END)
+
+            self.update_plot() # Redraw the graph to show new memory state
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to set memory value: {e}")
 
     def on_input_change(self, node_id):
         try:
@@ -462,7 +520,6 @@ class DataflowSimulator:
         self.executor = TokenBasedExecutor(current_G_copy)
         
         self.step_button.config(text="Next Step", state='normal', bg='#4CAF50')
-        self.status_label.config(text="Step: 0. Ready.")
 
         # Clear and update logger
         self.log_text_area.config(state='normal')
@@ -507,13 +564,10 @@ class DataflowSimulator:
                 executed_node_ids_this_step.append(node_id)
                 if detail['result_token']:
                     result_values_this_step.append(detail['result_token'].value)
-            
-            self.status_label.config(text=f"Step: {self.current_step}. Nodes: {executed_node_ids_this_step} -> {result_values_this_step}")
-            
+                        
             if self.executor.completed:
                 ret_val_str = f"{self.executor.return_value:.2f}" if isinstance(self.executor.return_value, float) else str(self.executor.return_value)
                 self.step_button.config(text=f"Done! Ret: {ret_val_str}", state='disabled', bg='#007ACC')
-                self.status_label.config(text=f"Completed! Return: {ret_val_str}")
                 self.log_text_area.insert(tk.END, f"--- Simulation Completed. Return Value: {ret_val_str} ---\n")
             
             self.log_text_area.see(tk.END)
@@ -537,7 +591,6 @@ class DataflowSimulator:
                 stuck_msg_status += "No executable nodes."
                 log_msg_details += "Graph may be stuck. No executable nodes and not completed.\n"
             
-            self.status_label.config(text=stuck_msg_status)
             self.log_text_area.insert(tk.END, log_msg_details) # Changed from log_msg to log_msg_details for clarity
             self.log_text_area.see(tk.END)
             self.log_text_area.config(state='disabled')
