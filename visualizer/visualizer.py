@@ -68,12 +68,15 @@ class Token:
     
     def __repr__(self):
         return f"Token({self.value})"
+    
+    def __eq__(self, other):
+        return ((self.value == other.value) and (self.source_node == other.source_node))
 
 class TokenBasedExecutor:
     def __init__(self, G):
         self.G = G
         self.node_values = {}  # Current computed values for each node (output of the node)
-        self.pending_tokens = {}  # Tokens waiting to be consumed by each node's inputs
+        self.pending_tokens = {}  # Map of Tokens waiting to be consumed by each node's inputs where nodes are keys and arrays of tokens are values
         self.execution_sequence = []  # Record of execution steps (list of step_info dicts)
         self.completed = False
         self.return_value = None
@@ -91,13 +94,15 @@ class TokenBasedExecutor:
         self.return_value = None
 
     def get_op_arity(self, node_id):
-        """Gets the number of input tokens an operation consumes."""
+        """Gets the min number of input tokens an operation consumes."""
         op_type = self.G.nodes[node_id].get('op', 'Unknown')
         if op_type in ['Constant', 'FunctionInput', 'Stream']:
             return 0
         elif op_type == 'Load':
             return 3
-        elif op_type in ['BasicBinaryOp', 'TS', 'FS', 'Carry']:
+        elif op_type == 'Carry':
+            return 1
+        elif op_type in ['BasicBinaryOp', 'TS', 'FS']:
             return 2
         elif op_type in ['Merge', 'Store']:
             return 3
@@ -106,7 +111,8 @@ class TokenBasedExecutor:
 
     def add_token(self, node, token):
         if node in self.pending_tokens:
-            self.pending_tokens[node].append(token)
+            if (token not in self.pending_tokens[node]): # Ensure no duplicate tokens
+                self.pending_tokens[node].append(token)
     
     def can_execute(self, node):
         op_type = self.G.nodes[node].get('op', 'Unknown')
@@ -142,14 +148,14 @@ class TokenBasedExecutor:
             result_token = Token(value, node)
         
         elif op_type == 'Carry':
-            if arity == 2 and len(consumed_input_values) >= 2:
-                A, B = consumed_input_values[0], consumed_input_values[1]
-                if (len(consumed_input_values) == 2):
-                    consumed_count = 2
+            if arity == 1 and len(consumed_input_values) >= 1:
+                if (len(consumed_input_values) == 1):
+                    A = consumed_input_values[0]
+                    consumed_count = 1
                     result_token = Token(A, node)
                 elif (len(consumed_input_values) == 3):
                     consumed_count = 3
-                    condition =  consumed_input_values[2] 
+                    condition, B, A = consumed_input_values[0], consumed_input_values[1], consumed_input_values[2] 
                     if (condition):
                         result_token = Token(B, node)
 
@@ -233,7 +239,7 @@ class TokenBasedExecutor:
             self.node_values[node] = result_token.value
             
         if consumed_count > 0: # Ensure only consumed tokens are removed
-            self.pending_tokens[node] = self.pending_tokens[node][consumed_count:]
+            self.pending_tokens[node] = []
         elif arity > 0 and consumed_count == 0 and op_type not in ['Constant', 'FunctionInput', 'Stream']:
             # This case implies an op had arity, but didn't logically consume inputs
             # (e.g. condition failed in TS/FS before consumption was set, or Load failed)
