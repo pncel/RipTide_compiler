@@ -49,6 +49,31 @@ void CustomDataflowGraph::wireValueToNode(llvm::Value *V, DataflowNode *destN) {
     }
 }
 
+void CustomDataflowGraph::pruneNodes() {
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        std::vector<DataflowNode*> nodesToRemove;
+
+        // Identify nodes to remove in this pass.
+        // A node is a candidate if it has no children (outputs) and is not a 'Store' instruction.
+        for (const auto& nodePtr : Nodes) {
+            DataflowNode* node = nodePtr.get();
+            if (node->Outputs.empty() && node->Type != DataflowOperatorType::Store) {
+                nodesToRemove.push_back(node);
+            }
+        }
+
+        // If we found any nodes to remove, set the flag and remove them.
+        if (!nodesToRemove.empty()) {
+            changed = true;
+            for (DataflowNode* node : nodesToRemove) {
+                removeNode(node);
+            }
+        }
+    }
+}
+
 void CustomDataflowGraph::removeNode(DataflowNode* nodeToRemove) {
     if (!nodeToRemove) {
         errs() << "Warning: Null node provided to removeNode\n";
@@ -274,11 +299,6 @@ void printCustomDFGToFile(const CustomDataflowGraph &customGraph, const std::str
 
     for (const auto& nodePtr : customGraph.Nodes) {
       const DataflowNode* node = nodePtr.get();
-
-      // Dont create any node that has no outputs
-      if (node->Outputs.empty()) {
-          continue;
-      }
       
       std::string nodeName = "node" + std::to_string(id++);
       nodeNames[node] = nodeName;

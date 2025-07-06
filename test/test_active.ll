@@ -3,38 +3,29 @@ source_filename = "../test/test_active.c"
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
 
-; Function Attrs: nofree norecurse nosync nounwind optsize memory(argmem: readwrite) uwtable
-define dso_local void @example(ptr noundef captures(none) %A, i32 noundef %n, i32 noundef %m) local_unnamed_addr #0 {
+; Function Attrs: mustprogress nofree norecurse nosync nounwind optsize willreturn memory(argmem: readwrite) uwtable
+define dso_local void @example(ptr noundef captures(none) initializes((0, 4)) %A, i32 noundef %n, i32 noundef %m) local_unnamed_addr #0 {
 entry:
-  %idxprom = sext i32 %m to i64
-  %arrayidx = getelementptr inbounds i32, ptr %A, i64 %idxprom
-  store i32 1, ptr %arrayidx, align 4, !tbaa !5
-  %cmp18 = icmp sgt i32 %n, 0
-  br i1 %cmp18, label %for.body.preheader, label %for.cond.cleanup
+  store i32 69, ptr %A, align 4, !tbaa !5
+  %0 = sext i32 %m to i64
+  %1 = getelementptr i32, ptr %A, i64 %0
+  %arrayidx1 = getelementptr i8, ptr %1, i64 8
+  store i32 1, ptr %arrayidx1, align 4, !tbaa !5
+  %sub = add nsw i32 %n, -6
+  %arrayidx2 = getelementptr inbounds nuw i8, ptr %A, i64 4
+  %2 = load i32, ptr %arrayidx2, align 4, !tbaa !5
+  %cmp = icmp sgt i32 %sub, %2
+  br i1 %cmp, label %if.then, label %if.end
 
-for.body.preheader:                               ; preds = %entry
-  %wide.trip.count = zext nneg i32 %n to i64
-  br label %for.body
+if.then:                                          ; preds = %entry
+  store i32 %sub, ptr %arrayidx2, align 4, !tbaa !5
+  br label %if.end
 
-for.cond.cleanup:                                 ; preds = %for.body, %entry
+if.end:                                           ; preds = %if.then, %entry
   ret void
-
-for.body:                                         ; preds = %for.body.preheader, %for.body
-  %indvars.iv = phi i64 [ 0, %for.body.preheader ], [ %indvars.iv.next, %for.body ]
-  %arrayidx2 = getelementptr inbounds nuw i32, ptr %A, i64 %indvars.iv
-  %0 = load i32, ptr %arrayidx2, align 4, !tbaa !5
-  %cmp3 = icmp sgt i32 %0, 42
-  %spec.select = select i1 %cmp3, i32 0, i32 %0
-  %1 = trunc nuw nsw i64 %indvars.iv to i32
-  %add = add nsw i32 %0, %1
-  %add8 = add nsw i32 %add, %spec.select
-  store i32 %add8, ptr %arrayidx2, align 4, !tbaa !5
-  %indvars.iv.next = add nuw nsw i64 %indvars.iv, 1
-  %exitcond.not = icmp eq i64 %indvars.iv.next, %wide.trip.count
-  br i1 %exitcond.not, label %for.cond.cleanup, label %for.body, !llvm.loop !9
 }
 
-attributes #0 = { nofree norecurse nosync nounwind optsize memory(argmem: readwrite) uwtable "min-legal-vector-width"="0" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
+attributes #0 = { mustprogress nofree norecurse nosync nounwind optsize willreturn memory(argmem: readwrite) uwtable "min-legal-vector-width"="0" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
 
 !llvm.module.flags = !{!0, !1, !2, !3}
 !llvm.ident = !{!4}
@@ -48,5 +39,3 @@ attributes #0 = { nofree norecurse nosync nounwind optsize memory(argmem: readwr
 !6 = !{!"int", !7, i64 0}
 !7 = !{!"omnipotent char", !8, i64 0}
 !8 = !{!"Simple C/C++ TBAA"}
-!9 = distinct !{!9, !10}
-!10 = !{!"llvm.loop.mustprogress"}

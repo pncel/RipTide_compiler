@@ -28,6 +28,41 @@ using namespace llvm::sys;
 
 namespace {
 class DataflowGraph : public PassInfoMixin<DataflowGraph> {
+
+private:
+  // Finds the DFG node that produces the memory token at the end of a block.
+  DataflowNode* findTokenSourceNode(BasicBlock* BB, CustomDataflowGraph &G) {
+      // Look backwards from the terminator for the last instruction that produces a token.
+      for (Instruction &I : reverse(*BB)) {
+          if (auto *CI = dyn_cast<CallInst>(&I)) {
+              if (CI->getCalledFunction() && CI->getCalledFunction()->getName().contains("lso.store")) {
+                  // The store call itself is the node that "produces" the new token.
+                  return G.findNodeForValue(CI);
+              }
+          }
+      }
+
+      // If no store in the block, the token must come from a PHI node at the start of the block.
+      if (auto *phi = dyn_cast<PHINode>(&BB->front())) {
+          if (phi->getName().contains("lso.token.phi")) {
+              return G.findNodeForValue(phi);
+          }
+      }
+      
+      // For the entry block, it might be the initial constant token.
+      if(BB->isEntryBlock()){
+         for(Instruction& I : *BB){
+            if(auto* LI = dyn_cast<LoadInst>(&I)){
+               if(auto* C = dyn_cast<ConstantInt>(LI->getOperand(1))){
+                  return G.getOrAdd(C);
+               }
+            }
+         }
+      }
+
+
+      return nullptr; // Should not happen in well-formed LSO code.
+  }
   
   // Helper to unify steering logic
   std::pair<DataflowNode*,DataflowNode*>
@@ -324,7 +359,25 @@ public:
         }
       }
 
+      // Pass to create steer nodes for all conditional branches upfront.
+      // This ensures that comparison instructions feeding branches are always wired
+      // correctly, even if the branch doesn't lead to a PHI node.
+      for (auto &BB : F) {
+          if (auto *BI = dyn_cast<BranchInst>(BB.getTerminator())) {
+              if (BI->isConditional()) {
+                  // Check if steers for this branch have already been created.
+                  if (BranchSteers.find(BI) == BranchSteers.end()) {
+                      // Steers not found, so create and store them. This call
+                      // also wires the condition (the cmp node) to the new T/F steers.
+                      auto [tS, fS] = createSteers(customGraph, BI->getCondition(), nullptr, nullptr);
+                      BranchSteers[BI] = {tS, fS};
+                  }
+              }
+          }
+      }
+
       llvm::Value *const_duplicate = nullptr;
+
 
       // Pass 3: Add edges specifically for PHI nodes (Merges)
       for (auto &BB : F) {
@@ -488,11 +541,93 @@ public:
             // Handle cases where an argument is used by another Argument or Constant (less common)
         }
     }
+
+    // Pass 5: Reroute data dependencies through the steer nodes for conditional branches.
+    // This correctly models that the data flow is gated by the branch condition,
+    // handling cases that do not merge into a PHI node.
+    for (auto const& [BI, steerPair] : BranchSteers) {
+        DataflowNode *tS = steerPair.first; // TrueSteer
+        DataflowNode *fS = steerPair.second; // FalseSteer
+        BasicBlock *branchBlock = BI->getParent();
+        BasicBlock *trueSuccessor = BI->getSuccessor(0);
+        BasicBlock *falseSuccessor = BI->getSuccessor(1);
+
+        // If either successor block begins with a PHI node, this branch's dataflow
+        // is handled by the PHI/Merge logic in Pass 3. Skip this pass to avoid
+        // creating redundant or conflicting control-dependency edges.
+        bool truePathFeedsPhi = trueSuccessor && !trueSuccessor->empty() && isa<PHINode>(&trueSuccessor->front());
+        bool falsePathFeedsPhi = falseSuccessor && !falseSuccessor->empty() && isa<PHINode>(&falseSuccessor->front());
+
+        if (truePathFeedsPhi || falsePathFeedsPhi) {
+            continue;
+        }
+
+        // Helper function to find and reroute edges crossing into a successor block.
+        auto processSuccessor = [&](BasicBlock* successor, DataflowNode* steerNode) {
+            if (!successor || !steerNode) return;
+
+            std::vector<DataflowEdge*> edgesToRewire;
+
+            // Iterate over all instructions in the successor block to find dependencies.
+            for (Instruction& I : *successor) {
+                DataflowNode* destNode = customGraph.findNodeForValue(&I);
+                if (!destNode) continue;
+
+                // Check all incoming edges for this destination node.
+                for (DataflowEdge* edge : destNode->Inputs) {
+                    DataflowNode* sourceNode = edge->Source;
+                    if (!sourceNode || !sourceNode->OriginalValue) continue;
+
+                    // If the dependency comes from an instruction inside the branching block...
+                    if (auto* sourceInst = dyn_cast<Instruction>(sourceNode->OriginalValue)) {
+                        if (sourceInst->getParent() == branchBlock) {
+                            // ...it's a control-dependent edge. Mark it for rewiring.
+                            edgesToRewire.push_back(edge);
+                        }
+                    }
+                }
+            }
+
+            // Perform the actual rewiring for all identified edges.
+            for (DataflowEdge* edgeToRewire : edgesToRewire) {
+                DataflowNode* source = edgeToRewire->Source;
+                DataflowNode* dest = edgeToRewire->Destination;
+
+                // Remove the direct edge (source -> dest) from the graph.
+                
+                // 1. Unlink from the source node's output list.
+                auto& sourceOutputs = source->Outputs;
+                sourceOutputs.erase(std::remove(sourceOutputs.begin(), sourceOutputs.end(), edgeToRewire), sourceOutputs.end());
+                
+                // 2. Unlink from the destination node's input list.
+                auto& destInputs = dest->Inputs;
+                destInputs.erase(std::remove(destInputs.begin(), destInputs.end(), edgeToRewire), destInputs.end());
+
+                // 3. Find and erase the edge from the graph's main edge list.
+                customGraph.Edges.erase(std::remove_if(customGraph.Edges.begin(), customGraph.Edges.end(),
+                    [&](const std::unique_ptr<DataflowEdge>& edgePtr) {
+                        return edgePtr.get() == edgeToRewire;
+                    }), customGraph.Edges.end());
+
+                // Add the new, correctly steered path: source -> steer -> dest
+                customGraph.addEdge(source, steerNode);
+                customGraph.addEdge(steerNode, dest);
+            }
+        };
+
+        // Reroute dependencies for both the true and false paths of the branch.
+        processSuccessor(trueSuccessor, tS);
+        processSuccessor(falseSuccessor, fS);
+    }
     
     // Hook up memory-dependency edges (store->load) - this function
     // in CustomDataflowGraph is currently a placeholder as per its implementation.
     customGraph.addMemDepEdges();
     customGraph.removeNode(customGraph.findNodeForValue(const_duplicate));
+
+    // Prune nodes that have no outputs, unless they are store instructions.
+    // This is done iteratively to remove chains of now-useless nodes.
+    customGraph.pruneNodes();
 
     // Print the custom graph to a DOT file
     printCustomDFGToFile(customGraph, "dfg.dot");
