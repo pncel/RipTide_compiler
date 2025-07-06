@@ -40,15 +40,13 @@ Libraries: /usr/local/lib/
 Headers: /usr/local/include/  
 CMake configs: /usr/local/lib/cmake/llvm/ or similar 
 
-**Run a pass:**
+**Generate a Data Flow Graph:**
 
+Generates a dataflow graph from test/test_active.c
 ```bash
 git clone https://github.com/pncel/RipTide_compiler.git
 cd RipTide_compiler
-mkdir build && cd build
-cmake -G Ninja .. -DLLVM_DIR=/usr/local/lib/cmake/llvm
-ninja
-/usr/local/bin/opt -load-pass-plugin ./ControlflowGraph.so -passes=ControlflowGraph -disable-output ../test/test_cfg.ll
+rebuild.sh
 ```
 
 ### Bonus:
